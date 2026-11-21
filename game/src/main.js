@@ -1,193 +1,241 @@
 // main.js — game loop + state: title, playing, paused, win, lose.
-// Wires level, player, guards, lighting, render, audio, input and HUD.
-// Debug stages for screenshots: ?stage=cover | play | nearmiss | win
+// One job: own the frame loop and wire the other files together.
 
-import { LEVEL, GUARD_POSTS, RELICS, EXIT, PLAYER_SPAWN } from './level.js';
-import { createPlayer, updatePlayer } from './player.js';
-import { createGuard, updateGuard, guardCone, guardCatches } from './guard.js';
-import { lightAt } from './lighting.js';
-import { drawScene } from './render.js';
-import { drawHUD, drawTitle, drawPaused, drawWin, drawLose } from './hud.js';
-import { createInput, consumeEdges } from './input.js';
-import * as audio from './audio.js';
+import { screenToTile, tileDist } from './iso.js';
+import { ARTIFACTS, EXIT, GUARD_ROUTES } from './level.js';
+import { createPlayer, updatePlayer, updateCoverState, resetPlayer, atExit } from './player.js';
+import { createGuard, updateGuard } from './guard.js';
+import { render } from './render.js';
+import { createAudio } from './audio.js';
+import { createInput } from './input.js';
+import { drawHud, drawOverlay } from './hud.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const params = new URLSearchParams(location.search);
-const stage = params.get('stage') || '';
+const audio = createAudio();
+const input = createInput(canvas);
 
-function freshState() {
+export const GAME_STATES = ['title', 'playing', 'paused', 'win', 'lose'];
+
+function createGame() {
   return {
-    mode: 'title',           // title | playing | paused | win | lose
-    player: createPlayer(),
-    guards: GUARD_POSTS.map((post, i) => createGuard(post, i)),
-    relics: RELICS.map((r) => ({ ...r, taken: false })),
-    cones: [],
-    relicsTaken: 0,
+    state: 'title',
+    time: 0,
     alarm: 0,
-    elapsed: 0,
-    startTime: 0,
-    timesSpotted: 0,
-    closestCall: 'never seen',
-    toast: '',
-    toastUntil: 0,
-    muted: false,
-    wasChasing: false,
-    wasSuspicious: false,
+    player: createPlayer(),
+    guards: GUARD_ROUTES.map((r, i) => createGuard(r, i)),
+    artifactsTaken: new Set(),
+    loseReason: '',
+    winTime: 0,
+    lastStep: 0,
+    chased: false,
   };
 }
 
-let state = freshState();
-const input = createInput();
-let lastFrame = performance.now();
-let time = 0;
+let game = createGame();
 
-function showToast(text, ms = 2200) {
-  state.toast = text;
-  state.toastUntil = time + ms;
+// Staged scenes for screenshots (?shot=cover|sneak|nearmiss|win):
+// the same game code, started from a mid-heist moment. Every scene parks
+// the guards (pauseTimer) and points their cones AWAY from the thief, or
+// stages a frozen near-miss — so a scene still reads the same a few
+// seconds after it loads, instead of decaying into a "CAUGHT!" screen.
+function parkGuard(i, x, y, facing, suspicion = 0, state = 'patrol') {
+  const g = game.guards[i];
+  g.x = x; g.y = y; g.facing = facing;
+  g.suspicion = suspicion; g.state = state;
+  g.pauseTimer = 8; g.lastSeen = null; g.searchTimer = 0;
 }
 
-function startGame() {
-  state = freshState();
-  state.mode = 'playing';
-  state.startTime = time;
-  audio.ensureAudio();
+function applyShot(shot) {
+  const p = game.player;
+  if (shot === 'cover') {
+    // Calm wide shot: the thief sneaks beside a planter while four amber
+    // cones sweep the bright floor. Nobody sees anybody.
+    game.state = 'playing';
+    game.time = 42;
+    p.x = 2.6; p.y = 6.2; p.sneaking = true;
+    parkGuard(0, 11.5, 2.5, 0.1); // Rosa, far north-east, facing east
+    parkGuard(1, 8.5, 5.5, -Math.PI / 2); // Bram, centre, facing north
+    parkGuard(2, 1.5, 6.5, Math.PI); // Ines, west wall, facing west
+    parkGuard(3, 12.5, 6.5, Math.PI / 2); // Tomas, east wall, facing south
+  } else if (shot === 'sneak') {
+    // Mid-sneak: Bram has a "?" and his amber cone sweeps just past the
+    // thief crouched by the statue. Re-stage right before the shot.
+    game.state = 'playing';
+    game.time = 75;
+    p.x = 4.6; p.y = 5.2; p.sneaking = true;
+    parkGuard(1, 7.5, 5.5, -2.25, 0.45, 'suspicious');
+    parkGuard(0, 11.5, 2.5, Math.PI / 2);
+    parkGuard(2, 1.5, 12.5, 0);
+    parkGuard(3, 12.5, 1.5, Math.PI / 2);
+  } else if (shot === 'nearmiss') {
+    // Near-miss: Rosa is ON the thief, red cone, "!", alarm half full.
+    // Staged fresh just before the shutter — a chasing guard would
+    // otherwise close the gap in under a second.
+    game.state = 'playing';
+    game.time = 110;
+    p.x = 8.2; p.y = 9.2;
+    parkGuard(0, 9.6, 8.2, Math.atan2(1, 0.4), 0.92, 'chase');
+    game.guards[0].lastSeen = { x: p.x, y: p.y };
+    parkGuard(1, 5.5, 5.5, 0);
+    parkGuard(2, 1.5, 6.5, 0);
+    parkGuard(3, 12.5, 1.5, Math.PI / 2);
+    game.alarm = 0.45;
+    game.artifactsTaken = new Set(['sun', 'falcon']);
+    game.player.artifacts = 2;
+  } else if (shot === 'win') {
+    game.state = 'win';
+    game.winTime = 187;
+    game.artifactsTaken = new Set(['sun', 'falcon', 'scarab']);
+    game.player.artifacts = 3;
+    p.x = EXIT.x; p.y = EXIT.y;
+  }
 }
 
-function applyStage() {
-  if (!stage) return;
-  state.mode = 'playing';
-  state.startTime = time - 45000;
-  state.elapsed = 45000;
-  if (stage === 'cover') {
-    state.player.x = 110; state.player.y = LEVEL.groundY;
-    state.player.light = 0.12; state.player.hidden = true;
-  }
-  if (stage === 'play') {
-    state.player.x = 500; state.player.y = LEVEL.groundY;
-    state.player.sneaking = true;
-    state.relics[0].taken = true; state.relicsTaken = 1;
-    state.guards[0].x = 420; state.guards[0].dir = -1;
-    showToast('Relic stolen: Jade Scarab', 99999);
-  }
-  if (stage === 'nearmiss') {
-    state.player.x = 660; state.player.y = LEVEL.groundY;
-    state.guards[1].x = 780; state.guards[1].dir = -1;
-    state.guards[1].suspicion = 62; state.guards[1].state = 'pause';
-    state.guards[1].lastSeenX = 660; state.guards[1].lastSeenY = LEVEL.groundY;
-    state.alarm = 55;
-    state.relics[0].taken = true; state.relics[1].taken = true; state.relicsTaken = 2;
-    showToast('A guard heard something…', 99999);
-  }
-  if (stage === 'win') {
-    state.mode = 'win';
-    state.elapsed = 187000;
-    state.timesSpotted = 1;
-    state.closestCall = 'a flashlight brushed your cloak';
-    state.relics.forEach((r) => { r.taken = true; });
-    state.relicsTaken = 3;
-    state.player.x = EXIT.x + 20; state.player.y = LEVEL.groundY;
-  }
+const params = new URLSearchParams(location.search);
+const shot = params.get('shot');
+if (shot) applyShot(shot);
+
+function restart() {
+  game = createGame();
+  game.state = 'playing';
+  if (shot) applyShot(shot);
 }
 
 function update(dt) {
-  const edges = consumeEdges(input);
-  if (edges.mutePressed) { state.muted = audio.toggleMute(); }
-  if (edges.restartPressed && state.mode !== 'title') { startGame(); return; }
-
-  if (state.mode === 'title') {
-    if (input.anyPressed) startGame();
-    input.anyPressed = false;
-    return;
+  if (game.state !== 'playing') return;
+  game.time += dt;
+  const dir = input.direction();
+  const click = input.consumeClick();
+  if (click) {
+    const t = screenToTile(click.sx, click.sy);
+    game.player.clickTarget = { x: t.x, y: t.y };
+    audio.ensure();
   }
-  if (state.mode === 'paused') {
-    if (edges.pausePressed) state.mode = 'playing';
-    input.anyPressed = false;
-    return;
+  if (dir.x !== 0 || dir.y !== 0) game.player.clickTarget = null;
+  const moved = updatePlayer(game.player, dir, dt, input.sneak);
+  updateCoverState(game.player);
+  // Footstep ticks, timed by distance walked.
+  if (moved && game.time - game.lastStep > (game.player.sneaking ? 0.55 : 0.34)) {
+    game.lastStep = game.time;
+    audio.footstep(game.player.sneaking);
   }
-  if (state.mode === 'win' || state.mode === 'lose') {
-    input.anyPressed = false;
-    return;
+  // Artifact pickup.
+  for (const a of ARTIFACTS) {
+    if (!game.artifactsTaken.has(a.id) &&
+        tileDist(game.player.x, game.player.y, a.x + 0.5, a.y + 0.5) < 0.75) {
+      game.artifactsTaken.add(a.id);
+      game.player.artifacts = game.artifactsTaken.size;
+      audio.pickup();
+    }
   }
-
-  if (edges.pausePressed) { state.mode = 'paused'; return; }
-  state.elapsed = time - state.startTime;
-
-  // Cones first: every system reads the same light this frame.
-  state.cones = state.guards.map((g) => guardCone(g, time));
-
-  // Player.
-  const p = state.player;
-  updatePlayer(p, { ...input, upPressed: edges.upPressed, crawlPressed: edges.crawlPressed }, dt, time);
-  p.light = lightAt(p.x, p.y - p.h / 2, state.cones, time);
-  p.hidden = p.light <= 0.25;
-  if (p.stepped) {
-    const nearest = state.guards.reduce((best, g) => Math.min(best, Math.abs(g.x - p.x)), 9999);
-    audio.footstep(Math.max(-1, Math.min(1, (state.guards[0].x - p.x) / 400)), p.crawling ? 0.3 : p.sneaking ? 0.5 : 1);
-    void nearest;
-  }
-
-  // Guards.
-  let chasing = false, suspicious = false;
-  for (const g of state.guards) {
-    updateGuard(g, p, state.cones, time, dt);
-    if (g.state === 'chase') chasing = true;
-    if (g.suspicion >= 35) suspicious = true;
-    if (guardCatches(g, p)) {
-      state.mode = 'lose';
-      audio.loseMotif();
+  // Guards. A guard crossing into "?" plays a questioning blip once.
+  let anyChase = false;
+  for (const g of game.guards) {
+    const wasSuspicious = g.suspicion >= 0.35;
+    const result = updateGuard(g, game.player, dt, game.time);
+    if (!wasSuspicious && g.suspicion >= 0.35 && g.state !== 'chase') audio.noticed();
+    if (g.state === 'chase') anyChase = true;
+    if (result === 'caught') {
+      game.state = 'lose';
+      game.loseReason = `Caught by ${g.name} the guard!`;
+      audio.caught();
       return;
     }
   }
-  if (chasing && !state.wasChasing) { audio.alarmSting(); state.timesSpotted++; }
-  if (suspicious && !state.wasSuspicious) audio.suspiciousTick();
-  state.wasChasing = chasing;
-  state.wasSuspicious = suspicious;
-  state.alarm = Math.max(...state.guards.map((g) => Math.max(g.suspicion, g.alarm)));
-  if (state.alarm >= 100) { state.mode = 'lose'; audio.loseMotif(); return; }
-
-  // Relics: step close to steal one.
-  for (const r of state.relics) {
-    if (!r.taken && Math.abs(p.x - r.x) < 34 && Math.abs(p.y - r.y) < 70) {
-      r.taken = true;
-      state.relicsTaken++;
-      audio.relicChime();
-      showToast(`Relic stolen: ${r.name}  (${state.relicsTaken}/3)`);
-      if (state.relicsTaken === 3) showToast('All relics stolen — reach the EXIT!', 3200);
-    }
+  if (anyChase && !game.chased) audio.alarm();
+  game.chased = anyChase;
+  // Alarm fills while chased, drains when hidden; full alarm ends the run.
+  game.alarm += (anyChase ? 0.12 : -0.2) * dt;
+  game.alarm = Math.max(0, Math.min(1, game.alarm));
+  if (game.alarm >= 1) {
+    game.state = 'lose';
+    game.loseReason = 'The alarm maxed out — the museum is locked down!';
+    audio.caught();
+    return;
   }
-
-  // Exit: win only with all 3 relics.
-  if (state.relicsTaken >= 3 && p.x > EXIT.x - 10 && p.x < EXIT.x + EXIT.w + 10
-      && p.y > EXIT.y - 10 && p.y < EXIT.y + EXIT.h + 10) {
-    state.mode = 'win';
-    audio.winMotif();
+  // Win: all three artifacts, then step onto the green exit.
+  if (game.artifactsTaken.size >= 3 && atExit(game.player)) {
+    game.state = 'win';
+    game.winTime = game.time;
+    audio.win();
   }
-  input.anyPressed = false;
 }
 
 function draw() {
-  drawScene(ctx, state, time);
-  if (state.mode === 'title') drawTitle(ctx, state);
-  else if (state.mode === 'paused') drawPaused(ctx);
-  else if (state.mode === 'win') drawWin(ctx, state);
-  else if (state.mode === 'lose') drawLose(ctx, state);
-  else drawHUD(ctx, state, time);
+  render(ctx, {
+    player: game.player,
+    guards: game.guards,
+    artifactsTaken: game.artifactsTaken,
+    time: game.time,
+  });
+  if (game.state === 'playing' || game.state === 'paused') {
+    drawHud(ctx, { player: game.player, guards: game.guards, time: game.time, alarm: game.alarm });
+  }
+  if (game.state === 'title') {
+    drawOverlay(ctx, 'DAYLIGHT HEIST', [
+      'Steal the Sun Disk, the Jade Falcon and the Golden Scarab,',
+      'then slip out the green EXIT — unseen.',
+      'Amber cones are guard eyesight. Planters, statues, crates and',
+      'columns break their line of sight. Sneak (Shift) to stay quiet.',
+      'Press ENTER or click the atrium to begin.',
+    ], '#b45309');
+  } else if (game.state === 'paused') {
+    drawOverlay(ctx, 'PAUSED', ['Press P to keep sneaking.', 'R restarts the heist.'], '#1d2a4a');
+  } else if (game.state === 'win') {
+    drawOverlay(ctx, 'CLEAN GETAWAY!', [
+      `All 3 artifacts stolen in ${Math.floor(game.winTime / 60)}:${String(Math.floor(game.winTime % 60)).padStart(2, '0')}.`,
+      'The atrium never knew you were there.',
+      'Press R to run it again.',
+    ], '#16a34a');
+  } else if (game.state === 'lose') {
+    drawOverlay(ctx, 'CAUGHT!', [
+      game.loseReason,
+      `${game.artifactsTaken.size} of 3 artifacts stolen.`,
+      'Press R to try the heist again.',
+    ], '#dc2626');
+  }
 }
 
+let last = performance.now();
 function frame(now) {
-  const dt = Math.min(3, Math.max(0.5, (now - lastFrame) / 16.7));
-  lastFrame = now;
-  time = now;
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (input.wasPressed('Enter') && game.state === 'title') {
+    game.state = 'playing';
+    audio.ensure();
+  }
+  if (input.wasPressed('KeyP') || input.wasPressed('Escape')) {
+    if (game.state === 'playing' || game.state === 'paused') {
+      game.state = game.state === 'playing' ? 'paused' : 'playing';
+    }
+  }
+  if (input.wasPressed('KeyR') && game.state !== 'title') restart();
+  if (input.wasPressed('KeyM')) audio.toggleMute();
   update(dt);
   draw();
   requestAnimationFrame(frame);
 }
 
-// Boot: apply a screenshot stage if requested, else show the title.
-applyStage();
-if (stage === 'cover') {
-  // Cover: keep the title off, show the full hall alive.
-  state.mode = 'playing';
-}
+// Test hook for headless play-testing: read state, drive the player, and
+// stage scenarios without touching the mouse or keyboard.
+window.__game = {
+  get state() { return game.state; },
+  get time() { return game.time; },
+  get alarm() { return game.alarm; },
+  get player() { return game.player; },
+  get guards() { return game.guards; },
+  get artifactsTaken() { return game.artifactsTaken; },
+  start() { game.state = 'playing'; audio.ensure(); },
+  restart,
+  // Re-stage a screenshot scene on demand (used right before the shutter
+  // so a chase scene cannot decay into a "CAUGHT!" screen first).
+  stageShot(name) { applyShot(name); },
+  teleport(x, y) { game.player.x = x; game.player.y = y; game.player.clickTarget = null; },
+  collectAll() {
+    for (const a of ARTIFACTS) game.artifactsTaken.add(a.id);
+    game.player.artifacts = 3;
+  },
+};
+
 requestAnimationFrame(frame);

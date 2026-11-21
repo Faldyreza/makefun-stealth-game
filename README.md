@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/best-stealth-game-20261121-1759/Faldyreza/makefun-stealth-game/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 [![reward](https://make.fun/badge/best-stealth-game-20261121-1759/Faldyreza/makefun-stealth-game/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 
-**NIGHT SHIFT: THE VAULT HEIST — SHADOW EDITION** — a side-view shadow stealth game built for make.fun's "Make the best stealth game" bounty ($50 in USDC). A total style break from v1–v3: no more top-down flat vector. This is a dark noir museum at night, seen from the side. The thief is a silhouette against lit walls; the guards sweep bright flashlight cones through the dark — and the cone IS the vision cone. Darkness hides you, light exposes you.
+**DAYLIGHT HEIST: THE ATRIUM JOB** — a bright isometric stealth game built for make.fun's "Make the best stealth game" bounty ($50 in USDC). A total style break from v1–v4: no more top-down flat vector, no more dark noir. This is a sunlit museum atrium at midday, seen in isometric view. The whole floor is bright, so hiding comes from cover — planters, statues, crates and columns that break a guard's line of sight — while wide bold amber vision cones sweep the cream marble. The guards wear dark navy against the light floor, the three artifacts glow gold on their pedestals, and the exit is a big green doorway. Light is everywhere; the cones are the danger.
 
 ## Run it
 
@@ -16,24 +16,24 @@ Then open http://localhost:8080 in a desktop browser. No build step, no network 
 
 ## How to play
 
-- **W A S D** / **arrow keys** — move · **Up** — jump, or climb a pipe
-- **Shift** — sneak (slower, quieter, harder to spot) · **C** — crawl through vents
-- **P** — pause · **R** — restart · **M** — mute
+- **W A S D** / **arrow keys** — move (isometric) · **click** — walk to a tile
+- **Shift** / **Space** — sneak (slower, quieter, harder to spot)
+- **P** / **Esc** — pause · **R** — restart · **M** — mute
 
-Steal 3 relics — the Jade Scarab, the Golden Idol, the Moon Pearl — then reach the glowing EXIT unseen. Three guards patrol the hall and the balcony, each sweeping a flashlight cone. Standing in a cone in the light fills a guard's suspicion fast; standing in deep shadow hides you even at close range. At "?" a guard stops and sweeps the light toward the doubt; at "!" the guard chases. Break line of sight, slip back into shadow, and the suspicion cools. Running and hard landings make noise the guards hear — the noise ring around the thief shows how loud you are. The eye at the top of the screen is your visibility meter: slashed and blue means HIDDEN, open and red means EXPOSED. If a chasing guard touches you, or the alarm maxes out, the run is over.
+Steal 3 artifacts — the Sun Disk, the Jade Falcon, the Golden Scarab — then reach the green EXIT unseen. Four guards patrol the atrium, each sweeping a wide amber vision cone across the bright floor. Standing in a cone fills a guard's suspicion fast; breaking line of sight behind a planter, statue, crate or column lets it cool. At "?" a guard stops and stares at the doubt; at "!" the guard chases. The balcony along the north edge is a raised vantage route where guards spot you half as fast. The eye at the top of the screen is your detection meter: green means HIDDEN, amber means SUSPICIOUS, red means SPOTTED. If a chasing guard touches you, or the alarm maxes out, the run is over.
 
 ## Layout
 
 - `game/index.html` — page and canvas
 - `game/src/main.js` — game loop + state (title, playing, paused, win, lose)
-- `game/src/level.js` — side-view map: platforms, pipes, vents, lamps, relics, exit
-- `game/src/player.js` — run/climb/crawl/sneak, noise, shadow state
-- `game/src/guard.js` — patrol, flashlight cone, suspicion, chase
-- `game/src/lighting.js` — shadow/light map, cone rendering, darkness veil
-- `game/src/render.js` — canvas drawing, silhouettes, noir palette
+- `game/src/iso.js` — isometric projection, tile + depth sorting
+- `game/src/level.js` — atrium map: cover, pedestals, exit, balcony, patrol routes
+- `game/src/player.js` — iso movement, sneak, cover state
+- `game/src/guard.js` — patrol, vision cone, suspicion, chase, search
+- `game/src/render.js` — canvas drawing, bright palette, bold shapes
 - `game/src/audio.js` — WebAudio footsteps, alarm sting, chimes (synthesized)
 - `game/src/input.js` — keyboard + mouse
-- `game/src/hud.js` — visibility meter, timer, win/lose screens
+- `game/src/hud.js` — detection meter, timer, win/lose screens
 - `main.ts` — hand-in program: copies `game/` + `screenshots/` and writes `dossier.json`
 - `screenshots/` — four real renders of the game running in headless Chrome
 

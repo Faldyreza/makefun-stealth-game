@@ -1,125 +1,104 @@
-// player.js — the thief: run, sneak, climb pipes, crawl vents, make noise.
-// Noise is the second stealth currency: fast feet and hard landings travel.
+// player.js — the thief: isometric movement, sneak, cover state.
+// One job: move the player and say how hidden they are. No rendering,
+// no guard logic — just the thief's body and senses.
 
-import { LEVEL, PLATFORMS, PIPES, ventAt } from './level.js';
+import { clampToFloor, tileDist } from './iso.js';
+import { coverAt, pedestalAt, isBalconyTile, EXIT, PLAYER_START } from './level.js';
+
+export const WALK_SPEED = 3.4; // tiles per second, upright
+export const SNEAK_SPEED = 1.8; // tiles per second, crouched and quiet
+export const PLAYER_RADIUS = 0.34;
 
 export function createPlayer() {
   return {
-    x: 60, y: LEVEL.groundY, vx: 0, vy: 0,
-    w: 22, h: 52,
-    facing: 1,                 // 1 = right, -1 = left
-    onGround: true,
+    x: PLAYER_START.x,
+    y: PLAYER_START.y,
+    z: 0, // height above floor (balcony lift, lerped)
+    facing: -Math.PI / 2, // screen-space angle the thief faces
     sneaking: false,
-    crawling: false,
-    climbing: false,
-    noise: 0,                  // 0..1, decays each frame; guards hear it
-    noisePulse: 0,             // recent noise event strength for the HUD ring
-    light: 0.05,               // light level at the thief's chest
-    hidden: true,              // in shadow right now
-    stepTimer: 0,
     moving: false,
+    clickTarget: null, // {x, y} tile target from a mouse click
+    stepPhase: 0, // advances with distance walked, drives footstep ticks
+    hidden: false, // behind cover from every guard's point of view
+    onBalcony: false,
+    artifacts: 0,
+    collected: new Set(),
   };
 }
 
-// Nearest pipe the player can grab (within reach, roughly at body height).
-function pipeNear(p) {
-  for (const pipe of PIPES) {
-    if (Math.abs(p.x - pipe.x) < 16 && p.y >= pipe.yTop - 10 && p.y <= pipe.yBottom + 10) return pipe;
-  }
-  return null;
+export function resetPlayer(p) {
+  const fresh = createPlayer();
+  Object.assign(p, fresh, { collected: new Set() });
 }
 
-export function updatePlayer(p, input, dt, time) {
-  const speed = p.crawling ? 0.9 : p.sneaking ? 1.5 : 3.4;
-  let move = 0;
-  if (input.left) move -= 1;
-  if (input.right) move += 1;
+// Try to step to (nx, ny): blocked by cover discs, pedestals and walls.
+// Slides along an obstacle when only one axis is blocked.
+function tryMove(p, nx, ny) {
+  const blocked = (x, y) => coverAt(x, y) !== null || pedestalAt(x, y) !== null;
+  const c = clampToFloor(nx, ny, 0.55);
+  nx = c.x;
+  ny = c.y;
+  if (!blocked(nx, ny)) { p.x = nx; p.y = ny; return true; }
+  if (!blocked(nx, p.y)) { p.x = nx; return true; }
+  if (!blocked(p.x, ny)) { p.y = ny; return true; }
+  return false;
+}
 
-  // Climbing: hold Up beside a pipe.
-  const pipe = pipeNear(p);
-  if (pipe && input.up && !p.crawling) {
-    p.climbing = true;
-    p.vy = 0;
-    p.y -= 2.2 * dt;
-    p.x = pipe.x;
-    if (p.y <= pipe.yTop) { p.y = pipe.yTop; p.climbing = false; }
-    p.moving = true;
-  } else if (p.climbing && input.down) {
-    p.y += 2.2 * dt;
-    if (p.y >= pipe.yBottom) { p.y = pipe.yBottom; p.climbing = false; }
-    p.moving = true;
-  } else {
-    p.climbing = false;
-  }
-
-  if (!p.climbing) {
-    p.vx = move * speed;
-    p.x += p.vx * dt;
-    p.moving = move !== 0;
-    if (move !== 0) p.facing = move;
-
-    // Gravity and platform landing.
-    p.vy += LEVEL.gravity * dt;
-    p.y += p.vy * dt;
-    p.onGround = false;
-    for (const plat of PLATFORMS) {
-      if (p.x + p.w / 2 > plat.x && p.x - p.w / 2 < plat.x + plat.w) {
-        const feet = p.y;
-        const prevFeet = feet - p.vy * dt;
-        if (p.vy >= 0 && prevFeet <= plat.y + 2 && feet >= plat.y - 2) {
-          if (p.vy > 9) makeNoise(p, 0.9, 'landing'); // hard landing is loud
-          p.y = plat.y;
-          p.vy = 0;
-          p.onGround = true;
-        }
-      }
-    }
-    // Jump with Up when standing (not while crawling).
-    if (input.upPressed && p.onGround && !p.crawling) {
-      p.vy = -11.5;
-      p.onGround = false;
-      makeNoise(p, 0.25, 'jump');
-    }
-    // Drop through a ledge with Down + Jump.
-    if (input.down && input.upPressed && p.onGround) {
-      p.y += 4;
-    }
-  }
-
-  // Sneak / crawl toggles.
-  p.sneaking = input.sneak && !p.crawling;
-  const vent = ventAt(p.x, p.y - 20);
-  if (input.crawlPressed) p.crawling = !p.crawling && (vent || p.onGround);
-  if (p.crawling && !vent && p.onGround && move === 0) {
-    // crawling is allowed on the floor too, but slow
-  }
-  if (p.crawling) p.h = 26; else p.h = 52;
-
-  // Footsteps: noise and a soft tick, louder and faster when running.
-  p.noise = Math.max(0, p.noise - 0.02 * dt);
-  p.noisePulse = Math.max(0, p.noisePulse - 0.05 * dt);
-  if (p.moving && p.onGround && !p.climbing) {
-    p.stepTimer += dt * (p.crawling ? 0.5 : p.sneaking ? 0.7 : 1.6);
-    if (p.stepTimer > 22) {
-      p.stepTimer = 0;
-      const loud = p.crawling ? 0.08 : p.sneaking ? 0.15 : 0.5;
-      makeNoise(p, loud, 'step');
-      p.stepped = true;
+// dir: {x, y} unit-ish tile direction from keys (may be zero).
+// dt in seconds. Returns distance walked this frame.
+export function updatePlayer(p, dir, dt, sneakHeld) {
+  p.sneaking = sneakHeld && (dir.x !== 0 || dir.y !== 0 || p.clickTarget !== null);
+  let mx = dir.x;
+  let my = dir.y;
+  if ((mx === 0 && my === 0) && p.clickTarget) {
+    const dx = p.clickTarget.x - p.x;
+    const dy = p.clickTarget.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.12) {
+      p.clickTarget = null;
     } else {
-      p.stepped = false;
+      mx = dx / d;
+      my = dy / d;
     }
-  } else {
-    p.stepped = false;
   }
-
-  // Walls of the hall.
-  p.x = Math.max(18, Math.min(LEVEL.width - 18, p.x));
-  if (p.y > LEVEL.groundY) { p.y = LEVEL.groundY; p.vy = 0; p.onGround = true; }
-  return p;
+  const len = Math.hypot(mx, my);
+  p.moving = len > 0.01;
+  if (p.moving) {
+    const speed = p.sneaking ? SNEAK_SPEED : WALK_SPEED;
+    const step = (speed * dt) / len;
+    const ox = p.x;
+    const oy = p.y;
+    tryMove(p, p.x + mx * step, p.y + my * step);
+    const moved = tileDist(ox, oy, p.x, p.y);
+    p.stepPhase += moved * 2.4;
+    // Face the direction of travel in screen space: in iso, moving
+    // (+dx, +dy) in tile space points down-screen, (-dx, +dy) left.
+    const sx = (p.x - ox) - (p.y - oy);
+    const sy = (p.x - ox) + (p.y - oy);
+    if (sx !== 0 || sy !== 0) p.facing = Math.atan2(sy, sx);
+  }
+  // Balcony lift: smooth step up/down when crossing the balcony edge.
+  const wantZ = isBalconyTile(Math.floor(p.x), Math.floor(p.y)) ? 30 : 0;
+  p.z += (wantZ - p.z) * Math.min(1, dt * 6);
+  p.onBalcony = p.z > 15;
+  return p.moving;
 }
 
-export function makeNoise(p, amount, kind) {
-  p.noise = Math.min(1, Math.max(p.noise, amount));
-  p.noisePulse = Math.max(p.noisePulse, amount);
-  p.lastNoiseKind = kind;
+// The thief counts as behind cover when a cover object stands within one
+// tile — crouched beside a planter or statue, hard to spot at a glance.
+export function updateCoverState(p) {
+  let near = false;
+  for (const dx of [-1, 0, 1]) {
+    for (const dy of [-1, 0, 1]) {
+      if (coverAt(p.x + dx * 0.5, p.y + dy * 0.5)) { near = true; break; }
+    }
+    if (near) break;
+  }
+  p.hidden = near && p.sneaking;
+  return p.hidden;
+}
+
+// True when the thief stands on the exit pad with all artifacts in hand.
+export function atExit(p) {
+  return tileDist(p.x, p.y, EXIT.x, EXIT.y) < EXIT.radius;
 }

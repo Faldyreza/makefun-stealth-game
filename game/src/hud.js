@@ -1,129 +1,127 @@
-// hud.js — the heads-up display: visibility eye + light meter, relic count,
-// timer, alarm bar, and the title / pause / win / lose screens.
-// Drawn in canvas so the screenshots carry the whole game.
+// hud.js — the bright HUD: detection meter, timer, win/lose screens.
+// One job: draw everything that is not the atrium itself, on the canvas.
 
-import { LEVEL } from './level.js';
-
-function fmtTime(ms) {
-  const s = Math.floor(ms / 1000);
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
 }
 
-export function drawHUD(ctx, state, time) {
-  const { player, relicsTaken, alarm, elapsed, muted } = state;
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
-  // Top bar: title left, timer + relics right.
-  ctx.fillStyle = 'rgba(5,5,10,0.55)';
-  ctx.fillRect(0, 0, LEVEL.width, 44);
-  ctx.fillStyle = '#d8b25e';
-  ctx.font = 'bold 17px Georgia, serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('NIGHT SHIFT — THE VAULT HEIST', 18, 28);
-  ctx.fillStyle = '#cfc4a8';
-  ctx.font = '15px Georgia, serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(`TIME ${fmtTime(elapsed)}`, LEVEL.width - 18, 20);
-  ctx.fillText(`RELICS ${relicsTaken}/3`, LEVEL.width - 18, 38);
-
-  // Visibility meter: an eye that opens in the light, closes in shadow.
-  const light = player.light;
-  const mx = 640, my = 26;
-  ctx.fillStyle = 'rgba(5,5,10,0.6)';
-  ctx.beginPath(); ctx.arc(mx, my, 17, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = light > 0.55 ? '#ffd76a' : '#8fa3c8';
+// Top bar: title, artifact diamonds, timer, alarm meter, detection eye.
+export function drawHud(ctx, state) {
+  const { player, guards, time, alarm } = state;
+  ctx.fillStyle = 'rgba(255, 252, 240, 0.92)';
+  roundRect(ctx, 12, 10, 1256, 52, 10);
+  ctx.fill();
+  ctx.strokeStyle = '#d9b380';
   ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(mx, my, 15, 0, Math.PI * 2); ctx.stroke();
-  // Eye: pupil size grows with light; a slash when hidden.
-  ctx.fillStyle = light > 0.55 ? '#ff5d4d' : '#8fa3c8';
-  ctx.beginPath(); ctx.arc(mx, my, 3 + light * 6, 0, Math.PI * 2); ctx.fill();
-  if (light <= 0.25) {
-    ctx.strokeStyle = '#8fa3c8';
-    ctx.beginPath(); ctx.moveTo(mx - 11, my + 11); ctx.lineTo(mx + 11, my - 11); ctx.stroke();
-  }
-  ctx.fillStyle = light > 0.55 ? '#ffb84d' : '#9fb2d8';
-  ctx.font = 'bold 12px Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(player.hidden ? 'HIDDEN' : light > 0.55 ? 'EXPOSED' : 'SEEN?', mx, my + 34);
-  // Light bar under the eye.
-  ctx.fillStyle = '#1c1626';
-  ctx.fillRect(mx - 40, my + 40, 80, 6);
-  ctx.fillStyle = light > 0.55 ? '#ff5d4d' : light > 0.25 ? '#ffd76a' : '#5f7fb8';
-  ctx.fillRect(mx - 40, my + 40, 80 * light, 6);
+  ctx.stroke();
 
-  // Alarm bar (bottom left) — fills as guards grow suspicious.
-  ctx.fillStyle = 'rgba(5,5,10,0.6)';
-  ctx.fillRect(14, LEVEL.height - 34, 220, 22);
-  ctx.fillStyle = '#1c1626';
-  ctx.fillRect(18, LEVEL.height - 30, 160, 14);
-  ctx.fillStyle = alarm > 70 ? '#ff4d4d' : alarm > 35 ? '#ffb84d' : '#5f7fb8';
-  ctx.fillRect(18, LEVEL.height - 30, 160 * Math.min(1, alarm / 100), 14);
-  ctx.fillStyle = '#cfc4a8';
-  ctx.font = '12px Georgia, serif';
+  ctx.fillStyle = '#7c2d12';
+  ctx.font = 'bold 22px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('ALARM', 184, LEVEL.height - 18);
+  ctx.fillText('DAYLIGHT HEIST', 26, 44);
+  ctx.fillStyle = '#5b4a2a';
+  ctx.font = '15px "Trebuchet MS", sans-serif';
+  ctx.fillText('— THE ATRIUM JOB', 208, 44);
 
-  // Controls hint (bottom right).
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(207,196,168,0.75)';
-  ctx.font = '12px Georgia, serif';
-  ctx.fillText('Arrows/WASD move · Up jump/climb · Shift sneak · C crawl · P pause · M mute', LEVEL.width - 14, LEVEL.height - 14);
-  if (muted) ctx.fillText('MUTED', LEVEL.width - 14, LEVEL.height - 32);
+  // Artifact diamonds: gold when stolen, grey outline when still on show.
+  for (let i = 0; i < 3; i++) {
+    const cx = 430 + i * 34;
+    const cy = 36;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = player.artifacts > i ? '#ffb703' : '#e7dcc3';
+    ctx.strokeStyle = '#b45309';
+    ctx.lineWidth = 2;
+    ctx.fillRect(-9, -9, 18, 18);
+    ctx.strokeRect(-9, -9, 18, 18);
+    ctx.restore();
+  }
+  ctx.fillStyle = '#5b4a2a';
+  ctx.font = 'bold 14px "Trebuchet MS", sans-serif';
+  ctx.fillText(`${player.artifacts} / 3`, 540, 41);
 
-  // Toast message (relic stolen, guard suspicious...).
-  if (state.toast && time < state.toastUntil) {
-    ctx.fillStyle = 'rgba(5,5,10,0.7)';
-    const tw = ctx.measureText(state.toast).width + 30;
-    ctx.fillRect(LEVEL.width / 2 - tw / 2, 100, tw, 30);
-    ctx.fillStyle = '#ffd76a';
-    ctx.font = 'bold 15px Georgia, serif';
+  // Timer.
+  ctx.fillStyle = '#1d2a4a';
+  ctx.font = 'bold 20px "Trebuchet MS", sans-serif';
+  ctx.fillText(`⏱ ${formatTime(time)}`, 620, 42);
+
+  // Detection eye: the highest guard suspicion right now.
+  const worst = guards.reduce((m, g) => Math.max(m, g.suspicion), 0);
+  const eyeColor = worst >= 0.85 ? '#dc2626' : worst >= 0.35 ? '#d97706' : '#2e9e5b';
+  ctx.fillStyle = eyeColor;
+  ctx.beginPath();
+  ctx.ellipse(800, 36, 22, 13, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(800, 36, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1d2a4a';
+  ctx.beginPath();
+  ctx.arc(800, 36, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#5b4a2a';
+  ctx.font = 'bold 13px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(worst >= 0.85 ? 'SPOTTED!' : worst >= 0.35 ? 'SUSPICIOUS' : 'HIDDEN', 830, 41);
+
+  // Alarm meter: fills while any guard chases; full means the run is over.
+  ctx.fillStyle = '#5b4a2a';
+  ctx.font = 'bold 13px "Trebuchet MS", sans-serif';
+  ctx.fillText('ALARM', 1000, 41);
+  ctx.fillStyle = '#e7dcc3';
+  roundRect(ctx, 1060, 24, 180, 20, 10);
+  ctx.fill();
+  ctx.fillStyle = alarm > 0.6 ? '#dc2626' : '#f59e0b';
+  if (alarm > 0.01) {
+    roundRect(ctx, 1060, 24, 180 * Math.min(1, alarm), 20, 10);
+    ctx.fill();
+  }
+  ctx.strokeStyle = '#b45309';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 1060, 24, 180, 20, 10);
+  ctx.stroke();
+
+  // Balcony tip: when the thief stands on the raised slab, say why it helps.
+  if (player.onBalcony) {
+    ctx.fillStyle = 'rgba(42, 157, 143, 0.92)';
+    roundRect(ctx, 480, 66, 320, 24, 8);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px "Trebuchet MS", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(state.toast, LEVEL.width / 2, 120);
+    ctx.fillText('BALCONY — guards spot you half as fast up here', 640, 83);
+    ctx.textAlign = 'left';
   }
 }
 
-function overlay(ctx, title, lines, accent) {
-  ctx.fillStyle = 'rgba(3,3,8,0.78)';
-  ctx.fillRect(0, 0, LEVEL.width, LEVEL.height);
+// Big centre overlay for title / pause / win / lose.
+export function drawOverlay(ctx, title, lines, accent) {
+  ctx.fillStyle = 'rgba(253, 246, 227, 0.88)';
+  ctx.fillRect(0, 0, 1280, 720);
   ctx.fillStyle = accent;
-  ctx.font = 'bold 44px Georgia, serif';
+  ctx.font = 'bold 52px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(title, LEVEL.width / 2, 250);
-  ctx.fillStyle = '#e8ddc0';
-  ctx.font = '18px Georgia, serif';
-  lines.forEach((line, i) => ctx.fillText(line, LEVEL.width / 2, 300 + i * 30));
-  ctx.fillStyle = '#8fa3c8';
-  ctx.font = '15px Georgia, serif';
-  ctx.fillText('Press R to play again · M to mute', LEVEL.width / 2, 300 + lines.length * 30 + 40);
-}
-
-export function drawTitle(ctx, state) {
-  overlay(ctx, 'NIGHT SHIFT', [
-    'THE VAULT HEIST — SHADOW EDITION',
-    '',
-    'Steal 3 relics. Stay in the dark. Reach the EXIT unseen.',
-    'Light exposes you — shadow hides you. Watch the eye.',
-    'Guards sweep flashlight cones: "?" means suspicious, "!" means run.',
-    '',
-    'Press any key to begin',
-  ], '#d8b25e');
-}
-
-export function drawPaused(ctx) {
-  overlay(ctx, 'PAUSED', ['The hall waits in the dark.', '', 'P to resume · R to restart'], '#8fa3c8');
-}
-
-export function drawWin(ctx, state) {
-  overlay(ctx, 'CLEAN GETAWAY', [
-    `All 3 relics stolen in ${fmtTime(state.elapsed)}.`,
-    `Times spotted: ${state.timesSpotted} · Closest call: ${state.closestCall}`,
-    'The vault never saw you coming.',
-  ], '#ffd76a');
-}
-
-export function drawLose(ctx, state) {
-  overlay(ctx, 'CAUGHT', [
-    'A guard laid hands on you in the light.',
-    `Relics stolen: ${state.relicsTaken}/3 · Time: ${fmtTime(state.elapsed)}`,
-    'The night shift ends in a cell.',
-  ], '#ff5d4d');
+  ctx.fillText(title, 640, 300);
+  ctx.fillStyle = '#5b4a2a';
+  ctx.font = '20px "Trebuchet MS", sans-serif';
+  lines.forEach((line, i) => ctx.fillText(line, 640, 350 + i * 32));
+  ctx.textAlign = 'left';
 }

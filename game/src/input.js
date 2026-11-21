@@ -1,62 +1,72 @@
-// input.js — keyboard + mouse. Arrows / WASD to move, Shift to sneak,
-// C to crawl, Up to jump or climb pipes, P pause, M mute, R restart.
-// Clicking the canvas also wakes audio (browsers require a gesture).
+// input.js — keyboard + mouse.
+// One job: turn physical input into a movement direction and game commands.
+// main.js polls this each frame; nothing else reads the DOM events.
 
-export function createInput() {
+export function createInput(canvas) {
   const input = {
-    left: false, right: false, up: false, down: false,
-    sneak: false, upPressed: false, crawlPressed: false,
-    pausePressed: false, mutePressed: false, restartPressed: false,
-    anyPressed: false,
+    keys: new Set(),
+    sneak: false,
+    clickTile: null, // {x, y} tile the player clicked, consumed by main.js
+    pressed: new Set(), // edge-triggered keys, consumed by main.js
   };
 
-  const down = (e) => {
-    input.anyPressed = true;
-    switch (e.code) {
-      case 'ArrowLeft': case 'KeyA': input.left = true; break;
-      case 'ArrowRight': case 'KeyD': input.right = true; break;
-      case 'ArrowUp': case 'KeyW':
-        if (!input.up) input.upPressed = true;
-        input.up = true; break;
-      case 'ArrowDown': case 'KeyS': input.down = true; break;
-      case 'ShiftLeft': case 'ShiftRight': input.sneak = true; break;
-      case 'KeyC': input.crawlPressed = true; break;
-      case 'KeyP': case 'Escape': input.pausePressed = true; break;
-      case 'KeyM': input.mutePressed = true; break;
-      case 'KeyR': input.restartPressed = true; break;
-      case 'Enter': case 'Space': input.anyPressed = true; break;
-    }
-    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
-  };
-  const up = (e) => {
-    switch (e.code) {
-      case 'ArrowLeft': case 'KeyA': input.left = false; break;
-      case 'ArrowRight': case 'KeyD': input.right = false; break;
-      case 'ArrowUp': case 'KeyW': input.up = false; break;
-      case 'ArrowDown': case 'KeyS': input.down = false; break;
-      case 'ShiftLeft': case 'ShiftRight': input.sneak = false; break;
-    }
+  const KEY_DIRS = {
+    KeyW: [-1, -1], ArrowUp: [-1, -1],
+    KeyS: [1, 1], ArrowDown: [1, 1],
+    KeyA: [-1, 1], ArrowLeft: [-1, 1],
+    KeyD: [1, -1], ArrowRight: [1, -1],
   };
 
-  window.addEventListener('keydown', down);
-  window.addEventListener('keyup', up);
-  window.addEventListener('mousedown', () => { input.anyPressed = true; });
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+    if (!e.repeat) input.pressed.add(e.code);
+    input.keys.add(e.code);
+    // Sneak while either Shift is held, or while Space is held down.
+    input.sneak = input.keys.has('ShiftLeft') || input.keys.has('ShiftRight') || input.keys.has('Space');
+  });
+  window.addEventListener('keyup', (e) => {
+    input.keys.delete(e.code);
+    input.sneak = input.keys.has('ShiftLeft') || input.keys.has('ShiftRight') || input.keys.has('Space');
+  });
+  window.addEventListener('blur', () => {
+    input.keys.clear();
+    input.sneak = false;
+  });
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const sy = ((e.clientY - rect.top) / rect.height) * canvas.height;
+    input.clickTile = { sx, sy }; // main.js converts to tile coords
+  });
+
+  // Movement direction in tile space, from whatever keys are held.
+  input.direction = function direction() {
+    let x = 0;
+    let y = 0;
+    for (const code of input.keys) {
+      const d = KEY_DIRS[code];
+      if (d) { x += d[0]; y += d[1]; }
+    }
+    return { x, y };
+  };
+
+  // True once for a key pressed since the last check.
+  input.wasPressed = function wasPressed(code) {
+    if (input.pressed.has(code)) {
+      input.pressed.delete(code);
+      return true;
+    }
+    return false;
+  };
+
+  input.consumeClick = function consumeClick() {
+    const c = input.clickTile;
+    input.clickTile = null;
+    return c;
+  };
+
   return input;
-}
-
-// Edge-triggered flags are consumed once per frame by the game loop.
-export function consumeEdges(input) {
-  const edges = {
-    upPressed: input.upPressed,
-    crawlPressed: input.crawlPressed,
-    pausePressed: input.pausePressed,
-    mutePressed: input.mutePressed,
-    restartPressed: input.restartPressed,
-  };
-  input.upPressed = false;
-  input.crawlPressed = false;
-  input.pausePressed = false;
-  input.mutePressed = false;
-  input.restartPressed = false;
-  return edges;
 }

@@ -1,87 +1,82 @@
-// audio.js — all sound synthesized with WebAudio: soft footstep ticks panned
-// by guard distance, a low alarm sting, relic chimes, win and lose motifs.
-// No audio files, no network.
+// audio.js — synthesized sound: footsteps, alarms, chimes. No assets.
+// One job: make every sound with WebAudio oscillators. The context starts
+// only after the player's first input (browsers require a gesture).
 
-let ctx = null;
-let master = null;
-let muted = false;
+export function createAudio() {
+  const audio = {
+    ctx: null,
+    muted: false,
+    stepCount: 0,
+  };
 
-export function ensureAudio() {
-  if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
-  try {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    master = ctx.createGain();
-    master.gain.value = 0.5;
-    master.connect(ctx.destination);
-  } catch (e) { ctx = null; }
-}
+  audio.ensure = function ensure() {
+    if (!audio.ctx) {
+      try {
+        audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        audio.ctx = null;
+      }
+    }
+    if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+    return audio.ctx;
+  };
 
-export function toggleMute() {
-  muted = !muted;
-  if (master) master.gain.value = muted ? 0 : 0.5;
-  return muted;
-}
-export function isMuted() { return muted; }
+  function blip(freq, dur, type, gain, when = 0) {
+    if (audio.muted) return;
+    const ctx = audio.ensure();
+    if (!ctx) return;
+    const t = ctx.currentTime + when;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
 
-// A short filtered tick: a footstep on stone. pan -1..1 by guard distance.
-export function footstep(pan, loud) {
-  if (!ctx || muted) return;
-  const t = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  const filter = ctx.createBiquadFilter();
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(180 + Math.random() * 60, t);
-  osc.frequency.exponentialRampToValueAtTime(70, t + 0.07);
-  filter.type = 'lowpass';
-  filter.frequency.value = 500;
-  gain.gain.setValueAtTime(0.12 * loud, t);
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
-  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  osc.connect(filter); filter.connect(gain);
-  if (panner) { panner.pan.value = Math.max(-1, Math.min(1, pan)); gain.connect(panner); panner.connect(master); }
-  else gain.connect(master);
-  osc.start(t); osc.stop(t + 0.1);
-}
+  // Soft tick for a footstep; quieter and lower when sneaking.
+  audio.footstep = function footstep(sneaking) {
+    audio.stepCount++;
+    blip(sneaking ? 140 : 190, 0.06, 'sine', sneaking ? 0.03 : 0.07);
+  };
 
-function tone(freq, dur, type, vol, when = 0, slideTo = null) {
-  if (!ctx || muted) return;
-  const t = ctx.currentTime + when;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t);
-  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
-  gain.gain.setValueAtTime(vol, t);
-  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  osc.connect(gain); gain.connect(master);
-  osc.start(t); osc.stop(t + dur + 0.02);
-}
+  // A rising two-note sting when a guard starts the chase.
+  audio.alarm = function alarm() {
+    blip(440, 0.16, 'square', 0.06);
+    blip(587, 0.22, 'square', 0.06, 0.14);
+  };
 
-// Rising two-note alarm sting when a guard goes "!" and chases.
-export function alarmSting() {
-  tone(220, 0.25, 'sawtooth', 0.10);
-  tone(311, 0.35, 'sawtooth', 0.10, 0.18);
-  tone(440, 0.5, 'sawtooth', 0.08, 0.36, 660);
-}
+  // A short questioning blip when a guard first gets suspicious ("?").
+  audio.noticed = function noticed() {
+    blip(660, 0.1, 'triangle', 0.07);
+    blip(520, 0.14, 'triangle', 0.06, 0.1);
+  };
 
-// Soft "?" tick when a guard grows suspicious.
-export function suspiciousTick() {
-  tone(520, 0.12, 'sine', 0.08);
-  tone(660, 0.14, 'sine', 0.07, 0.1);
-}
+  // A bright chime when an artifact is pocketed.
+  audio.pickup = function pickup() {
+    blip(880, 0.12, 'sine', 0.09);
+    blip(1318, 0.2, 'sine', 0.08, 0.09);
+  };
 
-// Bright chime when a relic is stolen.
-export function relicChime() {
-  tone(880, 0.3, 'sine', 0.12);
-  tone(1318, 0.45, 'sine', 0.10, 0.09);
-}
+  // A warm arpeggio for the win.
+  audio.win = function win() {
+    [523, 659, 784, 1046].forEach((f, i) => blip(f, 0.25, 'triangle', 0.09, i * 0.12));
+  };
 
-// Win motif: a small rising arpeggio. Lose motif: a low falling drone.
-export function winMotif() {
-  [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.4, 'triangle', 0.12, i * 0.13));
-}
-export function loseMotif() {
-  tone(196, 0.8, 'sawtooth', 0.10, 0, 98);
-  tone(147, 1.0, 'sawtooth', 0.08, 0.3, 73);
+  // A low thud for being caught.
+  audio.caught = function caught() {
+    blip(110, 0.4, 'sawtooth', 0.1);
+    blip(82, 0.5, 'sawtooth', 0.1, 0.12);
+  };
+
+  audio.toggleMute = function toggleMute() {
+    audio.muted = !audio.muted;
+    return audio.muted;
+  };
+
+  return audio;
 }
