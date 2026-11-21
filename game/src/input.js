@@ -1,67 +1,56 @@
-// input.js — keyboard state: WASD + arrows to move, Shift to sneak.
-// Edge-triggered keys (pause, restart, mute) are consumed once per press.
+// input.js — keyboard plus mouse. WASD / arrows move, Shift sneaks,
+// P pauses, R restarts, M mutes. Clicking the floor sets a walk target
+// (click-to-move), so the game also plays with the mouse alone.
 
-const MOVE_KEYS = {
-  KeyW: [0, -1],
-  ArrowUp: [0, -1],
-  KeyS: [0, 1],
-  ArrowDown: [0, 1],
-  KeyA: [-1, 0],
-  ArrowLeft: [-1, 0],
-  KeyD: [1, 0],
-  ArrowRight: [1, 0],
-};
+export function createInput(canvas) {
+  const input = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    sneak: false,
+    pausePressed: false,
+    restartPressed: false,
+    mutePressed: false,
+    click: null, // { x, y } in canvas pixels, consumed by main.js
+  };
 
-export class Input {
-  constructor() {
-    this.down = new Set();
-    this.pressed = new Set(); // edge-triggered, cleared each frame by main.js
-    this.onKeyDown = this.onKeyDown.bind(this);
-    this.onKeyUp = this.onKeyUp.bind(this);
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
-  }
+  const keyMap = {
+    KeyW: 'up', ArrowUp: 'up',
+    KeyS: 'down', ArrowDown: 'down',
+    KeyA: 'left', ArrowLeft: 'left',
+    KeyD: 'right', ArrowRight: 'right',
+    ShiftLeft: 'sneak', ShiftRight: 'sneak',
+  };
 
-  onKeyDown(e) {
-    if (MOVE_KEYS[e.code] || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+  window.addEventListener('keydown', (e) => {
+    if (keyMap[e.code] !== undefined) {
+      input[keyMap[e.code]] = true;
       e.preventDefault();
     }
-    if (!e.repeat) this.pressed.add(e.code);
-    this.down.add(e.code);
-  }
+    if (e.code === 'KeyP' && !e.repeat) input.pausePressed = true;
+    if (e.code === 'KeyR' && !e.repeat) input.restartPressed = true;
+    if (e.code === 'KeyM' && !e.repeat) input.mutePressed = true;
+  });
 
-  onKeyUp(e) {
-    this.down.delete(e.code);
-  }
+  window.addEventListener('keyup', (e) => {
+    if (keyMap[e.code] !== undefined) input[keyMap[e.code]] = false;
+  });
 
-  axisX() {
-    let x = 0;
-    for (const code of this.down) {
-      const v = MOVE_KEYS[code];
-      if (v) x += v[0];
-    }
-    return x;
-  }
+  canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    input.click = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  });
 
-  axisY() {
-    let y = 0;
-    for (const code of this.down) {
-      const v = MOVE_KEYS[code];
-      if (v) y += v[1];
-    }
-    return y;
-  }
+  // Blur clears held keys so the player never walks off on its own.
+  window.addEventListener('blur', () => {
+    input.up = input.down = input.left = input.right = input.sneak = false;
+  });
 
-  sneak() {
-    return this.down.has('ShiftLeft') || this.down.has('ShiftRight');
-  }
-
-  // True once per physical press; main.js clears the set after each frame.
-  wasPressed(code) {
-    return this.pressed.has(code);
-  }
-
-  endFrame() {
-    this.pressed.clear();
-  }
+  return input;
 }

@@ -1,22 +1,21 @@
-// guard.js — the night guards: patrols, vision cones, suspicion, alarm.
-// A guard walks a fixed route, pauses at waypoints to look around, and watches a
-// cone in front of them. Seeing the player fills their suspicion meter; a full
-// meter means the guard raises the alarm and gives chase. Breaking line of sight
-// lets the meter cool — getting spotted is a scare, not an instant loss.
+// guard.js — the night staff. Three kinds, one suspicion system.
+// Patroller: walks a waypoint loop, pauses at each stop and looks around.
+// Sentry: stands in one spot and sweeps its long narrow cone back and forth.
+// Roamer: wanders a long cross-map route with no fixed rhythm.
+// Every guard has a suspicion meter: unaware -> suspicious (walks over to
+// look, "?" overhead) -> alert (chases, "!" overhead). Breaking line of
+// sight and hiding in shadow lets the meter cool back down.
 
-import { circleHitsSolid, inLight, inShadow, sightBlocked } from './level.js';
+export const SUSPICIOUS_AT = 0.45;
+export const ALERT_AT = 0.85;
 
-export const CONE_RANGE = 235;
-export const CONE_HALF_ANGLE = 0.56; // ~32 degrees each side
-export const PATROL_SPEED = 66;
-export const INVESTIGATE_SPEED = 112;
-export const CHASE_SPEED = 158;
-export const CATCH_DISTANCE = 26;
-
-// Suspicion fills per second at point-blank range, scaled by distance, light and
-// whether the player is sneaking. It drains when the player is unseen.
-const FILL_BASE = 1.15;
-const DRAIN_RATE = 0.38;
+// Per-kind tuning: cone length, cone half-angle, walk speed, chase speed,
+// and how sharply the guard notices the player.
+const KIND_TUNING = {
+  patroller: { coneLen: 235, halfAngle: 0.52, patrol: 72, chase: 152, sense: 1.0 },
+  sentry: { coneLen: 305, halfAngle: 0.30, patrol: 0, chase: 138, sense: 1.25 },
+  roamer: { coneLen: 215, halfAngle: 0.52, patrol: 96, chase: 158, sense: 0.9 },
+};
 
 function angleDiff(a, b) {
   let d = a - b;
@@ -25,252 +24,184 @@ function angleDiff(a, b) {
   return d;
 }
 
-function angleLerp(a, b, t) {
-  return a + angleDiff(b, a) * t;
+export function createGuard(def) {
+  const t = KIND_TUNING[def.kind];
+  return {
+    name: def.name,
+    kind: def.kind,
+    x: def.x,
+    y: def.y,
+    angle: def.angle,
+    baseAngle: def.angle,
+    homeX: def.x,
+    homeY: def.y,
+    coneLen: t.coneLen,
+    halfAngle: t.halfAngle,
+    patrolSpeed: t.patrol,
+    chaseSpeed: t.chase,
+    sense: t.sense,
+    waypoints: def.waypoints,
+    waypointIndex: 1 % def.waypoints.length,
+    pauseLeft: 0,
+    lookPhase: Math.random() * Math.PI * 2,
+    sweepDir: 1,
+    mode: 'patrol', // patrol | investigate | chase
+    suspicion: 0,
+    lastSeen: null,
+    lastSeenAt: -99,
+    lostSightFor: 0,
+    investigateLeft: 0,
+    // True this frame when the guard can currently see the player.
+    seesPlayer: false,
+    stuckFor: 0,
+    lastX: def.x,
+    lastY: def.y,
+  };
 }
 
-export class Guard {
-  constructor(route, index) {
-    this.index = index;
-    this.route = route;
-    this.x = route[0].x;
-    this.y = route[0].y;
-    this.radius = 14;
-    this.targetIndex = 1 % route.length;
-    this.angle = Math.atan2(
-      route[this.targetIndex].y - this.y,
-      route[this.targetIndex].x - this.x,
-    );
-    this.state = 'patrol'; // patrol | pause | suspicious | investigate | chase | search | return
-    this.suspicion = 0;
-    this.pauseTimer = 0;
-    this.lookTimer = 0;
-    this.lookTarget = this.angle;
-    this.lastSeen = null; // {x, y} where the player was last spotted
-    this.noiseTarget = null;
-    this.stateTimer = 0;
-    this.chaseTime = 0;
-    this.scanPhase = index * 1.7; // guards don't all sweep in sync
-  }
+// Can this guard see the player right now? Inside the cone, in range, and
+// with a clear line of sight (no wall or tall shelf between them).
+export function guardCanSee(guard, level, px, py) {
+  const dx = px - guard.x;
+  const dy = py - guard.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > guard.coneLen) return false;
+  if (dist < 14) return level.hasLineOfSight(guard.x, guard.y, px, py);
+  const toPlayer = Math.atan2(dy, dx);
+  if (Math.abs(angleDiff(toPlayer, guard.angle)) > guard.halfAngle) return false;
+  return level.hasLineOfSight(guard.x, guard.y, px, py);
+}
 
-  reset() {
-    const fresh = new Guard(this.route, this.index);
-    Object.assign(this, fresh);
-  }
+// How fast suspicion rises while the guard sees the player. Nearer, in
+// lamplight, and moving fast all fill the meter quicker; far away, in
+// shadow, and sneaking fill it far slower.
+export function suspicionRate(guard, level, player, dist) {
+  const near = 1.15 - Math.min(1, dist / guard.coneLen);
+  const light = level.lightFactorAt(player.x, player.y);
+  const vis = player.moving ? (player.sneaking ? 0.45 : 1.0) : 0.55;
+  return 1.1 * Math.max(0.25, near) * light * vis * guard.sense;
+}
 
-  // Can this guard see the player right now? Cone + range + line of sight.
-  canSee(player) {
-    const dx = player.x - this.x;
-    const dy = player.y - this.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > CONE_RANGE || dist < 1) return { seen: false, dist };
-    const toPlayer = Math.atan2(dy, dx);
-    if (Math.abs(angleDiff(toPlayer, this.angle)) > CONE_HALF_ANGLE) {
-      return { seen: false, dist };
+// Walk toward a point, sliding along walls. Returns true when arrived.
+function walkToward(guard, level, tx, ty, speed, dt) {
+  const dx = tx - guard.x;
+  const dy = ty - guard.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 6) return true;
+  const step = Math.min(dist, speed * dt);
+  guard.x += (dx / dist) * step;
+  level.resolveCircle(guard, 13);
+  guard.y += (dy / dist) * step;
+  level.resolveCircle(guard, 13);
+  guard.angle = Math.atan2(dy, dx);
+  return dist - step < 6;
+}
+
+export function updateGuard(guard, level, player, now, dt, onAlert) {
+  const dist = Math.hypot(player.x - guard.x, player.y - guard.y);
+  const sees = guardCanSee(guard, level, player.x, player.y);
+  guard.seesPlayer = sees;
+
+  if (sees) {
+    guard.suspicion += suspicionRate(guard, level, player, dist) * dt;
+    guard.lastSeen = { x: player.x, y: player.y };
+    guard.lastSeenAt = now;
+    guard.lostSightFor = 0;
+    if (guard.suspicion >= ALERT_AT && guard.mode !== 'chase') {
+      guard.mode = 'chase';
+      if (onAlert) onAlert(guard);
+    } else if (guard.suspicion >= SUSPICIOUS_AT && guard.mode === 'patrol') {
+      guard.mode = 'investigate';
+      guard.investigateLeft = 0;
     }
-    if (sightBlocked(this.x, this.y, player.x, player.y)) return { seen: false, dist };
-    return { seen: true, dist };
-  }
-
-  // How fast suspicion fills while the player is visible.
-  fillRate(player, dist) {
-    const closeness = 1 - dist / CONE_RANGE; // 0 far .. 1 point-blank
-    let rate = FILL_BASE * (0.35 + closeness);
-    if (player.sneaking) rate *= 0.45;
-    if (inShadow(player.x, player.y)) rate *= 0.55;
-    if (inLight(player.x, player.y)) rate *= 1.35;
-    if (player.moving && !player.sneaking) rate *= 1.15;
-    return rate;
-  }
-
-  hearNoise(noise) {
-    if (this.state === 'chase') return;
-    const dx = noise.x - this.x;
-    const dy = noise.y - this.y;
-    if (dx * dx + dy * dy < noise.radius * noise.radius) {
-      this.noiseTarget = { x: noise.x, y: noise.y };
-      if (this.state === 'patrol' || this.state === 'pause') {
-        this.state = 'investigate';
-        this.stateTimer = 0;
-      }
+  } else {
+    guard.lostSightFor += dt;
+    // The meter cools when the player is out of sight — faster in shadow.
+    // A guard already walking over to investigate keeps its hunch while it
+    // moves, and only cools off once it has searched the spot.
+    const cool = guard.mode === 'investigate' ? 0.08
+      : level.inShadow(player.x, player.y) ? 0.55 : 0.4;
+    guard.suspicion = Math.max(0, guard.suspicion - cool * dt);
+    if (guard.mode === 'chase' && guard.lostSightFor > 2.5) {
+      guard.mode = 'investigate';
+      guard.investigateLeft = 0;
+    }
+    if (guard.mode === 'investigate' && guard.suspicion < SUSPICIOUS_AT) {
+      guard.mode = 'patrol';
     }
   }
+  guard.suspicion = Math.min(1, guard.suspicion);
 
-  update(dt, player, onAlarm) {
-    const { seen, dist } = this.canSee(player);
-
-    // --- suspicion meter ---
-    if (seen) {
-      this.suspicion = Math.min(1, this.suspicion + this.fillRate(player, dist) * dt);
-      this.lastSeen = { x: player.x, y: player.y };
-    } else if (this.state !== 'chase') {
-      this.suspicion = Math.max(0, this.suspicion - DRAIN_RATE * dt);
+  // ---- behaviour by mode ----------------------------------------------
+  if (guard.mode === 'chase') {
+    const target = guard.lastSeen || { x: player.x, y: player.y };
+    walkToward(guard, level, target.x, target.y, guard.chaseSpeed, dt);
+    guard.angle = Math.atan2(player.y - guard.y, player.x - guard.x);
+  } else if (guard.mode === 'investigate') {
+    if (guard.lastSeen) {
+      // Sentries walk too: they have no patrol speed, so give every kind
+      // a floor of 70 px/s while investigating.
+      const invSpeed = Math.max(guard.patrolSpeed, 70) * 1.25;
+      const arrived = walkToward(guard, level, guard.lastSeen.x, guard.lastSeen.y, invSpeed, dt);
+      if (arrived) {
+        guard.investigateLeft += dt;
+        // Look around while searching the spot.
+        guard.angle += Math.sin(now * 2.2 + guard.lookPhase) * 1.6 * dt;
+        if (guard.investigateLeft > 2.5) {
+          guard.mode = 'patrol';
+          guard.suspicion = Math.min(guard.suspicion, 0.3);
+        }
+      }
+    } else {
+      guard.mode = 'patrol';
     }
-
-    // A full meter trips the alarm and the chase.
-    if (this.suspicion >= 1 && this.state !== 'chase') {
-      this.state = 'chase';
-      this.chaseTime = 0;
-      if (onAlarm) onAlarm(this);
+  } else if (guard.kind === 'sentry') {
+    // A sentry that walked off to investigate first strolls back to its
+    // post; once home it sweeps its long narrow cone back and forth.
+    const homeDist = Math.hypot(guard.homeX - guard.x, guard.homeY - guard.y);
+    if (homeDist > 8) {
+      walkToward(guard, level, guard.homeX, guard.homeY, 80, dt);
+    } else {
+      guard.sweepDir = guard.angle > guard.baseAngle + 1.05 ? -1
+        : guard.angle < guard.baseAngle - 1.05 ? 1 : guard.sweepDir;
+      guard.angle += guard.sweepDir * 0.55 * dt;
     }
-
-    // --- behaviour by state ---
-    switch (this.state) {
-      case 'patrol':
-        this.walkRoute(dt, PATROL_SPEED);
-        if (this.suspicion > 0.35) this.state = 'suspicious';
-        break;
-
-      case 'pause': {
-        this.pauseTimer -= dt;
-        // Sweep the head left and right while standing at a waypoint.
-        this.scanPhase += dt * 1.6;
-        this.angle = this.lookTarget + Math.sin(this.scanPhase) * 0.85;
-        if (this.pauseTimer <= 0) {
-          this.state = 'patrol';
-          this.angle = this.lookTarget;
-        }
-        if (this.suspicion > 0.35) this.state = 'suspicious';
-        break;
+  } else {
+    // Patroller / roamer: follow the waypoint loop, pausing to look around.
+    if (guard.pauseLeft > 0) {
+      guard.pauseLeft -= dt;
+      guard.angle += Math.sin(now * 1.8 + guard.lookPhase) * 1.4 * dt;
+    } else {
+      const wp = guard.waypoints[guard.waypointIndex];
+      const arrived = walkToward(guard, level, wp.x, wp.y, guard.patrolSpeed, dt);
+      if (arrived) {
+        guard.waypointIndex = (guard.waypointIndex + 1) % guard.waypoints.length;
+        guard.pauseLeft = guard.kind === 'roamer' ? 0.5 : 1.3;
       }
-
-      case 'suspicious': {
-        // Freeze, turn toward the glimpse, and stare. If it was nothing, cool off.
-        if (this.lastSeen) {
-          const want = Math.atan2(this.lastSeen.y - this.y, this.lastSeen.x - this.x);
-          this.angle = angleLerp(this.angle, want, Math.min(1, dt * 6));
-        }
-        if (this.suspicion <= 0.05) this.state = 'patrol';
-        else if (this.suspicion > 0.7) {
-          this.state = 'investigate';
-          this.stateTimer = 0;
-        }
-        break;
-      }
-
-      case 'investigate': {
-        const target = this.lastSeen || this.noiseTarget;
-        if (!target) {
-          this.state = 'patrol';
-          break;
-        }
-        this.stateTimer += dt;
-        const arrived = this.walkToward(dt, target.x, target.y, INVESTIGATE_SPEED);
-        if (arrived || this.stateTimer > 6) {
-          this.state = 'search';
-          this.stateTimer = 0;
-          this.lookTarget = this.angle;
-        }
-        break;
-      }
-
-      case 'search': {
-        // Look around the spot for a few seconds, then give up and head back.
-        this.stateTimer += dt;
-        this.scanPhase += dt * 2.2;
-        this.angle = this.lookTarget + Math.sin(this.scanPhase) * 1.1;
-        if (this.stateTimer > 3.2) {
-          this.state = 'return';
-          this.noiseTarget = null;
-        }
-        break;
-      }
-
-      case 'return': {
-        // Walk back to the nearest waypoint, then resume the patrol.
-        let best = 0;
-        let bestDist = Infinity;
-        this.route.forEach((wp, i) => {
-          const d = (wp.x - this.x) ** 2 + (wp.y - this.y) ** 2;
-          if (d < bestDist) {
-            bestDist = d;
-            best = i;
-          }
-        });
-        const arrived = this.walkToward(dt, this.route[best].x, this.route[best].y, PATROL_SPEED);
-        if (arrived) {
-          this.targetIndex = (best + 1) % this.route.length;
-          this.state = 'patrol';
-        }
-        break;
-      }
-
-      case 'chase': {
-        this.chaseTime += dt;
-        // Out of sight, the guard's certainty fades: a chase that loses the
-        // trail cools back into a search instead of running forever.
-        if (!seen) this.suspicion = Math.max(0, this.suspicion - 0.3 * dt);
-        // Chase the player's live position while seen, else the last seen spot.
-        const target = seen ? { x: player.x, y: player.y } : this.lastSeen;
-        if (target) this.walkToward(dt, target.x, target.y, CHASE_SPEED);
-        // Lost them for good: search where they vanished, then stand down.
-        if (!seen && this.suspicion < 0.55) {
-          this.state = 'search';
-          this.stateTimer = 0;
-          this.lookTarget = this.angle;
-        }
-        if (this.chaseTime > 9) {
-          this.suspicion = 0.4;
-          this.state = 'search';
-          this.stateTimer = 0;
-          this.lookTarget = this.angle;
-        }
-        break;
-      }
-      default:
-        this.state = 'patrol';
     }
   }
 
-  // Walk toward the current patrol waypoint; pause and look around on arrival.
-  walkRoute(dt, speed) {
-    const wp = this.route[this.targetIndex];
-    const arrived = this.walkToward(dt, wp.x, wp.y, speed);
-    if (arrived) {
-      this.targetIndex = (this.targetIndex + 1) % this.route.length;
-      this.state = 'pause';
-      this.pauseTimer = 1.4;
-      // Face the next leg of the route while pausing.
-      const next = this.route[this.targetIndex];
-      this.lookTarget = Math.atan2(next.y - this.y, next.x - this.x);
-    }
-  }
-
-  // Step toward (tx, ty) at speed, turning to face the movement. Returns true on arrival.
-  walkToward(dt, tx, ty, speed) {
-    const dx = tx - this.x;
-    const dy = ty - this.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < 6) return true;
-    const step = Math.min(dist, speed * dt);
-    const nx = (dx / dist) * step;
-    const ny = (dy / dist) * step;
-    const want = Math.atan2(dy, dx);
-    this.angle = angleLerp(this.angle, want, Math.min(1, dt * 8));
-    // Slide along walls the same way the player does, one axis at a time.
-    const canX = !circleHitsSolid(this.x + nx, this.y, this.radius);
-    const canY = !circleHitsSolid(this.x, this.y + ny, this.radius);
-    if (canX) this.x += nx;
-    if (canY) this.y += ny;
-    // Pressed against cover, sidestep around it instead of pushing into it
-    // forever: try sideways, first one way, then the other.
-    if ((!canX || !canY) && (nx !== 0 || ny !== 0)) {
-      const px = -ny;
-      const py = nx;
-      if (!circleHitsSolid(this.x + px, this.y + py, this.radius)) {
-        this.x += px;
-        this.y += py;
-      } else if (!circleHitsSolid(this.x - px, this.y - py, this.radius)) {
-        this.x -= px;
-        this.y -= py;
+  // If a walking guard has barely moved for a while, skip to the next
+  // waypoint instead of grinding against a wall forever.
+  const moved = Math.hypot(guard.x - guard.lastX, guard.y - guard.lastY);
+  if (guard.mode === 'patrol' && guard.kind !== 'sentry' && guard.pauseLeft <= 0) {
+    if (moved < 0.05) {
+      guard.stuckFor += dt;
+      if (guard.stuckFor > 1.2) {
+        guard.waypointIndex = (guard.waypointIndex + 1) % guard.waypoints.length;
+        guard.stuckFor = 0;
       }
+    } else {
+      guard.stuckFor = 0;
     }
-    return dist - step < 6;
   }
+  guard.lastX = guard.x;
+  guard.lastY = guard.y;
+}
 
-  caughtPlayer(player) {
-    const dx = player.x - this.x;
-    const dy = player.y - this.y;
-    return dx * dx + dy * dy < CATCH_DISTANCE * CATCH_DISTANCE;
-  }
+// The guard's current state, for the renderer and the HUD.
+export function guardStage(guard) {
+  if (guard.mode === 'chase') return 'alert';
+  if (guard.suspicion >= SUSPICIOUS_AT || guard.mode === 'investigate') return 'suspicious';
+  return 'unaware';
 }

@@ -1,102 +1,114 @@
-// player.js — the hooded thief: movement, sneaking, noise, key pickup.
-// The player is a circle that slides along walls; noise is what guards hear.
+// player.js — the thief. Movement, sneaking, noise, relic pickup.
+// The player is a circle that slides along walls; holding Shift sneaks
+// (slower, quieter, much harder to spot). Clicking the floor sets a
+// walk target so the game also plays with the mouse alone.
 
-import { circleHitsSolid, EXIT, KEY_SPOTS, LEVEL_HEIGHT, LEVEL_WIDTH, WALL } from './level.js';
-
-export const WALK_SPEED = 175;
-export const SNEAK_SPEED = 92;
 export const PLAYER_RADIUS = 13;
+export const WALK_SPEED = 178;
+export const SNEAK_SPEED = 86;
 
-// Noise a guard can hear: walking is loud, sneaking is a whisper.
-export const WALK_NOISE_RADIUS = 85;
-export const SNEAK_NOISE_RADIUS = 26;
-export const STEP_INTERVAL_WALK = 0.42;
-export const STEP_INTERVAL_SNEAK = 0.68;
+export function createPlayer(level) {
+  return {
+    x: level.spawn.x,
+    y: level.spawn.y,
+    radius: PLAYER_RADIUS,
+    facing: -Math.PI / 2,
+    sneaking: false,
+    moving: false,
+    speedNow: 0,
+    // Click-to-move target, null when the keys are driving.
+    clickTarget: null,
+    stepPhase: 0,
+    stepDue: false,
+  };
+}
 
-export class Player {
-  constructor() {
-    this.reset();
-  }
+// Read the keyboard state (and an optional click target) and move the
+// player one frame. dt is seconds. Returns nothing; the player object
+// is updated in place.
+export function updatePlayer(player, level, input, dt) {
+  let dx = 0;
+  let dy = 0;
+  if (input.left) dx -= 1;
+  if (input.right) dx += 1;
+  if (input.up) dy -= 1;
+  if (input.down) dy += 1;
 
-  reset() {
-    this.x = 96;
-    this.y = 640;
-    this.radius = PLAYER_RADIUS;
-    this.facing = -Math.PI / 2; // starts looking up the floor
-    this.sneaking = false;
-    this.moving = false;
-    this.keys = 0;
-    this.stepTimer = 0;
-    this.bob = 0; // walk-cycle phase, drives the cloak sway in render.js
-    this.noiseEvents = []; // {x, y, radius} emitted this frame for guards to hear
-  }
-
-  // dirX/dirY come from input.js, already normalised. dt in seconds.
-  update(dt, input, onStep) {
-    this.noiseEvents.length = 0;
-    const ix = input.axisX();
-    const iy = input.axisY();
-    const len = Math.hypot(ix, iy);
-    this.moving = len > 0.01;
-    this.sneaking = input.sneak() && this.moving;
-
-    if (this.moving) {
-      const speed = this.sneaking ? SNEAK_SPEED : WALK_SPEED;
-      const nx = ix / len;
-      const ny = iy / len;
-      this.facing = Math.atan2(ny, nx);
-      this.bob += dt * (this.sneaking ? 7 : 11);
-      this.moveAxis(nx * speed * dt, 0);
-      this.moveAxis(0, ny * speed * dt);
-
-      // Footsteps: a soft tick plus a noise pulse guards can investigate.
-      this.stepTimer -= dt;
-      if (this.stepTimer <= 0) {
-        this.stepTimer = this.sneaking ? STEP_INTERVAL_SNEAK : STEP_INTERVAL_WALK;
-        const radius = this.sneaking ? SNEAK_NOISE_RADIUS : WALK_NOISE_RADIUS;
-        this.noiseEvents.push({ x: this.x, y: this.y, radius });
-        if (onStep) onStep(this.sneaking, this.x, this.y);
-      }
+  if (dx !== 0 || dy !== 0) {
+    // Keys win over a click target.
+    player.clickTarget = null;
+    const len = Math.hypot(dx, dy);
+    dx /= len;
+    dy /= len;
+  } else if (player.clickTarget) {
+    const tx = player.clickTarget.x - player.x;
+    const ty = player.clickTarget.y - player.y;
+    const dist = Math.hypot(tx, ty);
+    if (dist < 8) {
+      player.clickTarget = null;
     } else {
-      this.stepTimer = 0;
+      dx = tx / dist;
+      dy = ty / dist;
     }
   }
 
-  // Move one axis at a time so the player slides along walls instead of sticking.
-  moveAxis(dx, dy) {
-    const nx = this.x + dx;
-    const ny = this.y + dy;
-    if (!circleHitsSolid(nx, ny, this.radius)) {
-      this.x = Math.max(WALL + this.radius, Math.min(LEVEL_WIDTH - WALL - this.radius, nx));
-      this.y = Math.max(WALL + this.radius, Math.min(LEVEL_HEIGHT - WALL - this.radius, ny));
+  player.sneaking = !!input.sneak;
+  const speed = player.sneaking ? SNEAK_SPEED : WALK_SPEED;
+  player.moving = dx !== 0 || dy !== 0;
+  player.speedNow = player.moving ? speed : 0;
+
+  if (player.moving) {
+    player.facing = Math.atan2(dy, dx);
+    // Move one axis at a time so the player slides along walls.
+    player.x += dx * speed * dt;
+    level.resolveCircle(player, player.radius);
+    player.y += dy * speed * dt;
+    level.resolveCircle(player, player.radius);
+    player.x = Math.max(player.radius + 20, Math.min(1280 - player.radius - 20, player.x));
+    player.y = Math.max(player.radius + 20, Math.min(720 - player.radius - 20, player.y));
+    // Footstep timing: a step every ~0.34 s walking, ~0.55 s sneaking.
+    player.stepPhase += dt * (player.sneaking ? 1.8 : 2.9);
+    if (player.stepPhase >= 1) {
+      player.stepPhase -= 1;
+      player.stepDue = true;
     }
   }
+}
 
-  // Standing on a document spot picks it up. Returns the label or null.
-  tryCollect(keys) {
-    for (const k of keys) {
-      if (!k.taken) {
-        const dx = this.x - k.x;
-        const dy = this.y - k.y;
-        if (dx * dx + dy * dy < 30 * 30) {
-          k.taken = true;
-          this.keys += 1;
-          return k.label;
-        }
-      }
+// How easy is this player to spot right now? 1.0 walking in the open,
+// much less while sneaking or standing still.
+export function playerVisibility(player) {
+  if (!player.moving) return 0.55;
+  return player.sneaking ? 0.45 : 1.0;
+}
+
+// Collect any relic the player is touching. Returns the relic taken, or null.
+export function collectRelics(player, level) {
+  for (const relic of level.relics) {
+    if (relic.taken) continue;
+    const dx = player.x - relic.x;
+    const dy = player.y - relic.y;
+    if (dx * dx + dy * dy < 26 * 26) {
+      relic.taken = true;
+      return relic;
     }
-    return null;
   }
+  return null;
+}
 
-  // Inside the exit doorway, and only once every document is held.
-  // The door is a vertical strip on the right wall: approach it from the left.
-  atExit() {
-    return (
-      this.keys >= KEY_SPOTS.length &&
-      this.x > EXIT.x - 30 &&
-      this.x < EXIT.x + EXIT.w + 6 &&
-      this.y > EXIT.y - 6 &&
-      this.y < EXIT.y + EXIT.h + 6
-    );
-  }
+export function relicsCollected(level) {
+  let n = 0;
+  for (const relic of level.relics) if (relic.taken) n++;
+  return n;
+}
+
+// True when the player stands in the glowing exit doorway.
+export function playerAtExit(player, level) {
+  const e = level.exit;
+  return (
+    player.x > e.x - 6 &&
+    player.x < e.x + e.w + 6 &&
+    player.y > e.y - 4 &&
+    player.y < e.y + e.h + 14
+  );
 }

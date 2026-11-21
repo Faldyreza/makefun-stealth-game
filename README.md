@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/best-stealth-game-20261121-1759/Faldyreza/makefun-stealth-game/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 [![reward](https://make.fun/badge/best-stealth-game-20261121-1759/Faldyreza/makefun-stealth-game/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 
-**NIGHT SHIFT: THE ARCHIVE** — a top-down stealth game built for make.fun's "Make the best stealth game" bounty ($50 in USDC). The museum is closed, three archive documents are locked inside, and the night guards are walking their rounds. Slip past their vision cones, stay in the dark, grab all three documents — then reach the glowing green exit unseen.
+**NIGHT SHIFT: THE VAULT HEIST** — a top-down stealth game built for make.fun's "Make the best stealth game" bounty ($50 in USDC). The museum is closed, five relics are locked inside three zones — Archive, Vault, Gallery — and six night guards are walking their rounds. Slip past their raycast vision cones (walls and tall shelves really block them), stay in the dark, pocket all five relics — then reach the glowing green exit unseen.
 
 ## Run it
 
@@ -16,25 +16,25 @@ Then open http://localhost:8080 in a desktop browser. No build step, no network 
 
 ## How to play
 
-- **W A S D** / **arrow keys** — move
+- **W A S D** / **arrow keys** — move · **click the floor** — walk there
 - **Shift** — sneak (slower, quieter, harder to spot)
 - **P** — pause · **R** — restart · **M** — mute
 
-Guards patrol fixed routes with visible vision cones. Being inside a cone fills a guard's suspicion meter — slow when you're far away, in shadow, or sneaking; fast when you're close, in lamplight, or running. A full meter raises the alarm and the guard chases you; break line of sight and the meter cools. Crates, shelves, pillars and tall archive stacks block sight. The alarm bar at the top fills while any guard chases — if it maxes out, the museum locks down and the run is over.
+Six guards in three kinds — Patrollers walking waypoint loops, Sentries sweeping long narrow cones, and a Roamer wandering the whole floor. Being inside a cone fills a guard's suspicion meter — slow when you're far away, in shadow, or sneaking; fast when you're close, in lamplight, or moving. At half a meter a guard gets suspicious ("?") and walks over to look; a full meter raises the alarm ("!") and the guard chases you. Break line of sight and hide in shadow and the meter cools. Walls, tall shelves and pillars block sight; crates block movement only. The alarm bar at the top fills while any guard chases — if it maxes out, the museum locks down and the run is over. The minimap (top right) tracks every guard, relic and the exit.
 
-Collect all 3 documents, then reach the **EXIT** door (top right) to win.
+Collect all 5 relics, then reach the **EXIT** door (top of the Gallery) to win.
 
 ## Layout
 
 - `game/index.html` — page, HUD overlay and screens
 - `game/src/main.js` — game loop and state machine
-- `game/src/level.js` — the archive floor: walls, cover, shadows, keys, exit, patrols
+- `game/src/level.js` — the museum floor: walls, cover, shadows, lamps, relics, exit, patrol routes
 - `game/src/player.js` — the thief: movement, sneaking, noise, pickup
 - `game/src/guard.js` — patrols, vision cones, suspicion, alarm, chase
-- `game/src/render.js` — canvas drawing: floor, light, cones, guards, thief
+- `game/src/render.js` — canvas drawing: floor, light, raycast cones, guards, thief
 - `game/src/audio.js` — synthesized footsteps, alarm sting, jingles (WebAudio)
-- `game/src/input.js` — keyboard state
-- `game/src/hud.js` — DOM HUD, timer, alarm bar, title/win/lose screens
+- `game/src/input.js` — keyboard + click-to-move
+- `game/src/hud.js` — canvas HUD, timer, alarm bar, minimap, win/lose banners
 - `main.ts` — hand-in program: stages `game/` + `screenshots/` and writes `dossier.json`
 - `screenshots/` — four real renders of the game running in headless Chrome
 
