@@ -1,143 +1,129 @@
-// hud.js — the heads-up display and the title / pause / end screens.
-// The HUD lives in the top bar; the minimap owns the bottom-left corner, so
-// nothing else is drawn down there. End screens are translucent on purpose:
-// the level stays visible behind the banner.
+// hud.js — the heads-up display: visibility eye + light meter, relic count,
+// timer, alarm bar, and the title / pause / win / lose screens.
+// Drawn in canvas so the screenshots carry the whole game.
 
-export function drawTopBar(ctx, state) {
-  const level = state.level;
-  const taken = level.relics.filter((r) => r.taken).length;
-  const total = level.relics.length;
-  const runTaken = state.runRelicsTaken;
-  const runTotal = state.runRelicsTotal;
+import { LEVEL } from './level.js';
 
-  ctx.save();
-  // Bar background.
-  ctx.fillStyle = 'rgba(8, 8, 14, 0.92)';
-  ctx.fillRect(0, 0, 1280, 52);
-  ctx.fillStyle = level.theme.trim;
-  ctx.fillRect(0, 52, 1280, 2);
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
 
-  // Level name + objective (left).
-  ctx.fillStyle = '#f5ead0';
+export function drawHUD(ctx, state, time) {
+  const { player, relicsTaken, alarm, elapsed, muted } = state;
+
+  // Top bar: title left, timer + relics right.
+  ctx.fillStyle = 'rgba(5,5,10,0.55)';
+  ctx.fillRect(0, 0, LEVEL.width, 44);
+  ctx.fillStyle = '#d8b25e';
   ctx.font = 'bold 17px Georgia, serif';
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(level.name, 16, 17);
-  ctx.fillStyle = '#cbb98a';
-  ctx.font = '13px Georgia, serif';
-  ctx.fillText(level.objective, 16, 38);
-
-  // Relics (centre-left): this level and the whole run.
-  ctx.fillStyle = '#ffd24d';
-  ctx.font = 'bold 15px Georgia, serif';
-  ctx.fillText(`◆ RELICS ${taken}/${total}   ·   RUN ${runTaken}/${runTotal}`, 560, 26);
-
-  // Timer (centre-right).
-  const t = Math.floor(state.time);
-  const mm = String(Math.floor(t / 60)).padStart(2, '0');
-  const ss = String(t % 60).padStart(2, '0');
-  ctx.fillStyle = '#f5ead0';
-  ctx.font = 'bold 16px Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(`TIME ${mm}:${ss}`, 905, 26);
-
-  // Alarm bar (right).
-  const ax = 1010;
-  const ay = 14;
-  const aw = 200;
-  const ah = 16;
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#f5ead0';
-  ctx.font = 'bold 13px Georgia, serif';
-  ctx.fillText('ALARM', ax, ay - 1);
-  ctx.fillStyle = '#2a2a33';
-  ctx.fillRect(ax + 58, ay, aw - 58, ah);
-  const frac = state.alarm / 100;
-  ctx.fillStyle = frac < 0.5 ? '#e8a33d' : frac < 0.8 ? '#e86a2d' : '#e02b2b';
-  ctx.fillRect(ax + 58, ay, (aw - 58) * frac, ah);
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx.strokeRect(ax + 58, ay, aw - 58, ah);
-  if (state.alarm >= 80) {
-    ctx.fillStyle = '#ff5b5b';
-    ctx.font = 'bold 12px Georgia, serif';
-    ctx.fillText('LOCKDOWN IMMINENT', ax + 58, ay + 28);
-  }
-  ctx.restore();
-}
-
-/** Small controls hint, bottom-right — far from the minimap. */
-export function drawControlsHint(ctx) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(245, 234, 208, 0.55)';
-  ctx.font = '12px Georgia, serif';
+  ctx.fillText('NIGHT SHIFT — THE VAULT HEIST', 18, 28);
+  ctx.fillStyle = '#cfc4a8';
+  ctx.font = '15px Georgia, serif';
   ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('WASD / arrows move · click floor to walk · Shift sneak · P pause · R restart · M mute', 1264, 708);
-  ctx.restore();
-}
+  ctx.fillText(`TIME ${fmtTime(elapsed)}`, LEVEL.width - 18, 20);
+  ctx.fillText(`RELICS ${relicsTaken}/3`, LEVEL.width - 18, 38);
 
-function panel(ctx, title, lines, accent) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(5, 5, 10, 0.72)';
-  ctx.fillRect(0, 0, 1280, 720);
-  const w = 640;
-  const h = 150 + lines.length * 30;
-  const x = (1280 - w) / 2;
-  const y = (720 - h) / 2;
-  ctx.fillStyle = 'rgba(16, 14, 24, 0.96)';
-  ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = accent;
+  // Visibility meter: an eye that opens in the light, closes in shadow.
+  const light = player.light;
+  const mx = 640, my = 26;
+  ctx.fillStyle = 'rgba(5,5,10,0.6)';
+  ctx.beginPath(); ctx.arc(mx, my, 17, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = light > 0.55 ? '#ffd76a' : '#8fa3c8';
   ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, w, h);
+  ctx.beginPath(); ctx.arc(mx, my, 15, 0, Math.PI * 2); ctx.stroke();
+  // Eye: pupil size grows with light; a slash when hidden.
+  ctx.fillStyle = light > 0.55 ? '#ff5d4d' : '#8fa3c8';
+  ctx.beginPath(); ctx.arc(mx, my, 3 + light * 6, 0, Math.PI * 2); ctx.fill();
+  if (light <= 0.25) {
+    ctx.strokeStyle = '#8fa3c8';
+    ctx.beginPath(); ctx.moveTo(mx - 11, my + 11); ctx.lineTo(mx + 11, my - 11); ctx.stroke();
+  }
+  ctx.fillStyle = light > 0.55 ? '#ffb84d' : '#9fb2d8';
+  ctx.font = 'bold 12px Georgia, serif';
   ctx.textAlign = 'center';
-  ctx.fillStyle = accent;
-  ctx.font = 'bold 34px Georgia, serif';
-  ctx.fillText(title, 640, y + 58);
-  ctx.fillStyle = '#f5ead0';
-  ctx.font = '16px Georgia, serif';
-  lines.forEach((line, i) => ctx.fillText(line, 640, y + 104 + i * 30));
-  ctx.restore();
+  ctx.fillText(player.hidden ? 'HIDDEN' : light > 0.55 ? 'EXPOSED' : 'SEEN?', mx, my + 34);
+  // Light bar under the eye.
+  ctx.fillStyle = '#1c1626';
+  ctx.fillRect(mx - 40, my + 40, 80, 6);
+  ctx.fillStyle = light > 0.55 ? '#ff5d4d' : light > 0.25 ? '#ffd76a' : '#5f7fb8';
+  ctx.fillRect(mx - 40, my + 40, 80 * light, 6);
+
+  // Alarm bar (bottom left) — fills as guards grow suspicious.
+  ctx.fillStyle = 'rgba(5,5,10,0.6)';
+  ctx.fillRect(14, LEVEL.height - 34, 220, 22);
+  ctx.fillStyle = '#1c1626';
+  ctx.fillRect(18, LEVEL.height - 30, 160, 14);
+  ctx.fillStyle = alarm > 70 ? '#ff4d4d' : alarm > 35 ? '#ffb84d' : '#5f7fb8';
+  ctx.fillRect(18, LEVEL.height - 30, 160 * Math.min(1, alarm / 100), 14);
+  ctx.fillStyle = '#cfc4a8';
+  ctx.font = '12px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('ALARM', 184, LEVEL.height - 18);
+
+  // Controls hint (bottom right).
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(207,196,168,0.75)';
+  ctx.font = '12px Georgia, serif';
+  ctx.fillText('Arrows/WASD move · Up jump/climb · Shift sneak · C crawl · P pause · M mute', LEVEL.width - 14, LEVEL.height - 14);
+  if (muted) ctx.fillText('MUTED', LEVEL.width - 14, LEVEL.height - 32);
+
+  // Toast message (relic stolen, guard suspicious...).
+  if (state.toast && time < state.toastUntil) {
+    ctx.fillStyle = 'rgba(5,5,10,0.7)';
+    const tw = ctx.measureText(state.toast).width + 30;
+    ctx.fillRect(LEVEL.width / 2 - tw / 2, 100, tw, 30);
+    ctx.fillStyle = '#ffd76a';
+    ctx.font = 'bold 15px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.toast, LEVEL.width / 2, 120);
+  }
 }
 
-export function drawTitle(ctx) {
-  panel(ctx, 'NIGHT SHIFT', [
-    'THE GRAND HEIST',
-    'Three floors. Five relics. One night.',
-    'Slip past the guards — stay out of their cones, hide in the dark,',
-    'cut the camera fuse boxes, and reach the glowing exit unseen.',
-    'WASD / arrows or click to move · Shift to sneak · P pause · R restart · M mute',
-    'Press ENTER or click to begin the heist',
-  ], '#e8b64c');
+function overlay(ctx, title, lines, accent) {
+  ctx.fillStyle = 'rgba(3,3,8,0.78)';
+  ctx.fillRect(0, 0, LEVEL.width, LEVEL.height);
+  ctx.fillStyle = accent;
+  ctx.font = 'bold 44px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(title, LEVEL.width / 2, 250);
+  ctx.fillStyle = '#e8ddc0';
+  ctx.font = '18px Georgia, serif';
+  lines.forEach((line, i) => ctx.fillText(line, LEVEL.width / 2, 300 + i * 30));
+  ctx.fillStyle = '#8fa3c8';
+  ctx.font = '15px Georgia, serif';
+  ctx.fillText('Press R to play again · M to mute', LEVEL.width / 2, 300 + lines.length * 30 + 40);
+}
+
+export function drawTitle(ctx, state) {
+  overlay(ctx, 'NIGHT SHIFT', [
+    'THE VAULT HEIST — SHADOW EDITION',
+    '',
+    'Steal 3 relics. Stay in the dark. Reach the EXIT unseen.',
+    'Light exposes you — shadow hides you. Watch the eye.',
+    'Guards sweep flashlight cones: "?" means suspicious, "!" means run.',
+    '',
+    'Press any key to begin',
+  ], '#d8b25e');
 }
 
 export function drawPaused(ctx) {
-  panel(ctx, 'PAUSED', [
-    'The guards wait. The night does not.',
-    'Press P to keep sneaking · R to restart the floor',
-  ], '#cbb98a');
-}
-
-export function drawLevelClear(ctx, state) {
-  const next = state.levelIndex + 1;
-  panel(ctx, 'FLOOR CLEARED', [
-    `${state.level.name} — all relics secured.`,
-    next < 3 ? `The stairs down to floor ${next + 1} are open.` : '',
-    'Press ENTER to keep going',
-  ], '#7ddc7d');
+  overlay(ctx, 'PAUSED', ['The hall waits in the dark.', '', 'P to resume · R to restart'], '#8fa3c8');
 }
 
 export function drawWin(ctx, state) {
-  panel(ctx, 'THE GRAND HEIST — COMPLETE', [
-    'All five relics. All three floors. Not a single alarm that mattered.',
-    `Finished in ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, '0')} — the museum never knew you were there.`,
-    'Press R to run it again',
-  ], '#ffd24d');
+  overlay(ctx, 'CLEAN GETAWAY', [
+    `All 3 relics stolen in ${fmtTime(state.elapsed)}.`,
+    `Times spotted: ${state.timesSpotted} · Closest call: ${state.closestCall}`,
+    'The vault never saw you coming.',
+  ], '#ffd76a');
 }
 
-export function drawCaught(ctx, state) {
-  panel(ctx, 'CAUGHT', [
-    state.caughtReason || 'A guard got a hand on you.',
-    'The museum locks down. The night is over — for now.',
-    'Press R to try the floor again',
-  ], '#ff5b5b');
+export function drawLose(ctx, state) {
+  overlay(ctx, 'CAUGHT', [
+    'A guard laid hands on you in the light.',
+    `Relics stolen: ${state.relicsTaken}/3 · Time: ${fmtTime(state.elapsed)}`,
+    'The night shift ends in a cell.',
+  ], '#ff5d4d');
 }

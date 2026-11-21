@@ -1,519 +1,338 @@
-// render.js — draws the whole night: floor patterns and props per theme,
-// lamp pools and shadow patches, raycast vision cones, animated guard and
-// thief sprites, big "?" / "!" indicators with suspicion arcs, the glowing
-// exit, and the red screen-edge pulse when the alarm is up.
+// render.js — canvas drawing: the noir museum, silhouettes, lamp pools,
+// moon shafts, flashlight cones, relics, exit, dust motes in the light.
 
-import { castCone } from './lighting.js';
+import { LEVEL, PLATFORMS, PIPES, VENTS, COVER, LAMPS, MOON_SHAFTS, EXIT } from './level.js';
+import { drawDarkness } from './lighting.js';
 
-const TILE = 64;
+const WALL_TOP = '#101019';
+const WALL_BOTTOM = '#1b1424';
+const FLOOR = '#241c2e';
+const GOLD = '#d8b25e';
+const LAMP_GLOW = '#ffca6a';
 
-function drawFloor(ctx, level) {
-  const t = level.theme;
-  ctx.fillStyle = t.floor;
-  ctx.fillRect(0, 52, 1280, 668);
-  // Checkerboard tiles, subtly different per theme.
-  for (let y = 52; y < 720; y += TILE) {
-    for (let x = 0; x < 1280; x += TILE) {
-      if (((x / TILE) + ((y - 52) / TILE)) % 2 === 0) {
-        ctx.fillStyle = t.floorAlt;
-        ctx.fillRect(x, y, TILE, TILE);
-      }
-    }
+let lightCanvas = null;
+
+function ensureLightCanvas(w, h) {
+  if (!lightCanvas || lightCanvas.width !== w || lightCanvas.height !== h) {
+    lightCanvas = document.createElement('canvas');
+    lightCanvas.width = w; lightCanvas.height = h;
   }
-  // Gallery red carpet down the middle.
-  if (t.carpet) {
-    ctx.fillStyle = t.carpet;
-    ctx.fillRect(560, 68, 160, 636);
-    ctx.fillStyle = 'rgba(212, 175, 55, 0.5)';
-    ctx.fillRect(560, 68, 4, 636);
-    ctx.fillRect(716, 68, 4, 636);
-  }
-  // Faint tile grout lines.
-  ctx.strokeStyle = 'rgba(0,0,0,0.18)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = 0; x <= 1280; x += TILE) { ctx.moveTo(x, 52); ctx.lineTo(x, 720); }
-  for (let y = 52; y <= 720; y += TILE) { ctx.moveTo(0, y); ctx.lineTo(1280, y); }
-  ctx.stroke();
+  return lightCanvas;
 }
 
-function drawWalls(ctx, level) {
-  const t = level.theme;
-  for (const w of level.walls) {
-    ctx.fillStyle = t.wall;
-    ctx.fillRect(w.x, w.y, w.w, w.h);
-    ctx.fillStyle = t.trim;
-    if (w.h <= 20) ctx.fillRect(w.x, w.y + w.h - 3, w.w, 3);
-    else ctx.fillRect(w.x + w.w - 3, w.y, 3, w.h);
-  }
-}
+export function drawScene(ctx, state, time) {
+  const W = LEVEL.width, H = LEVEL.height;
+  const { player, guards, relics, cones } = state;
 
-function drawProps(ctx, level) {
-  for (const p of level.props) {
-    const { x, y, w, h } = p;
-    if (p.kind === 'painting') {
-      ctx.fillStyle = '#d4af37';
-      ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-      ctx.fillStyle = '#5a2d3a';
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = '#c98a4b';
-      ctx.beginPath();
-      ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) * 0.3, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (p.kind === 'scroll' || p.kind === 'safe') {
-      ctx.fillStyle = p.kind === 'safe' ? '#3d5266' : '#8a6b3f';
-      ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-      ctx.strokeRect(x + 4, y + 4, w - 8, h - 8);
-      if (p.kind === 'safe') {
-        ctx.fillStyle = '#c8d4e0';
-        ctx.beginPath();
-        ctx.arc(x + w / 2, y + h / 2, 7, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    } else if (p.kind === 'desk') {
-      ctx.fillStyle = '#6b4a26';
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = '#f0e6cc';
-      ctx.fillRect(x + 12, y + 10, 34, 22);
-      ctx.fillRect(x + w - 52, y + h - 26, 34, 16);
-    } else if (p.kind === 'crate') {
-      ctx.fillStyle = '#7a5a2e';
-      ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = '#4a3416';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
-      ctx.beginPath();
-      ctx.moveTo(x, y); ctx.lineTo(x + w, y + h);
-      ctx.moveTo(x + w, y); ctx.lineTo(x, y + h);
-      ctx.stroke();
-    } else if (p.kind === 'plant') {
-      ctx.fillStyle = '#2e5d33';
-      ctx.beginPath();
-      ctx.arc(x + w / 2, y + h / 2, w * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#3f7d46';
-      ctx.beginPath();
-      ctx.arc(x + w / 2 - 4, y + h / 2 - 4, w * 0.35, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (p.kind === 'case') {
-      ctx.fillStyle = '#22303e';
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = 'rgba(160, 210, 255, 0.35)';
-      ctx.fillRect(x + 6, y + 6, w - 12, h - 12);
-      ctx.fillStyle = '#ffd24d';
-      ctx.beginPath();
-      ctx.arc(x + w / 2, y + h / 2, 6, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (p.kind === 'bench') {
-      ctx.fillStyle = '#5c2a2a';
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = '#8a3a3a';
-      ctx.fillRect(x, y, w, 6);
-    } else if (p.kind === 'statue') {
-      ctx.fillStyle = '#8f8578';
-      ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
-      ctx.fillStyle = '#cfc4ae';
-      ctx.beginPath();
-      ctx.arc(x + w / 2, y + h / 2, w * 0.32, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillRect(x + w / 2 - 4, y + 2, 8, h * 0.4);
-    }
-  }
-}
+  // --- back wall: near-black with a faint warm gradient and tall arches
+  const wall = ctx.createLinearGradient(0, 0, 0, H);
+  wall.addColorStop(0, WALL_TOP);
+  wall.addColorStop(1, WALL_BOTTOM);
+  ctx.fillStyle = wall;
+  ctx.fillRect(0, 0, W, H);
 
-function drawShadowsAndLamps(ctx, level) {
-  // Shadow patches: deep dark, readable at a glance — but light enough
-  // that the sneaking thief still reads inside them.
-  for (const s of level.shadows) {
-    ctx.fillStyle = 'rgba(2, 2, 8, 0.48)';
-    ctx.fillRect(s.x, s.y, s.w, s.h);
-    ctx.strokeStyle = 'rgba(120, 140, 220, 0.18)';
-    ctx.setLineDash([6, 6]);
-    ctx.strokeRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
-    ctx.setLineDash([]);
-  }
-  // Lamp pools: warm radial light.
-  for (const l of level.lamps) {
-    const g = ctx.createRadialGradient(l.x, l.y, 8, l.x, l.y, l.r);
-    g.addColorStop(0, level.theme.lamp === '#9fd8ff' ? 'rgba(159,216,255,0.34)' : 'rgba(255,200,110,0.30)');
-    g.addColorStop(1, 'rgba(255,200,110,0)');
-    ctx.fillStyle = g;
+  // Arched windows high on the wall, moonlight behind them.
+  ctx.fillStyle = '#0e1424';
+  for (const sx of [380, 920]) {
     ctx.beginPath();
-    ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
-    ctx.fill();
-    // The lamp fixture itself.
-    ctx.fillStyle = '#3a2f1c';
-    ctx.beginPath();
-    ctx.arc(l.x, l.y, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#ffe9b0';
-    ctx.beginPath();
-    ctx.arc(l.x, l.y, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function drawExit(ctx, state) {
-  const level = state.level;
-  const e = level.exit;
-  const taken = level.relics.filter((r) => r.taken).length;
-  const open = state.exitUnlocked;
-  const cx = e.x + e.w / 2;
-  const cy = e.y + e.h / 2;
-  // Glow.
-  const glow = ctx.createRadialGradient(cx, cy, 4, cx, cy, 90);
-  glow.addColorStop(0, open ? 'rgba(61,220,90,0.55)' : 'rgba(224,43,43,0.35)');
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(cx, cy, 90, 0, Math.PI * 2);
-  ctx.fill();
-  // Door.
-  ctx.fillStyle = open ? '#1f7a33' : '#5a1f1f';
-  ctx.fillRect(e.x, e.y, e.w, e.h);
-  ctx.strokeStyle = open ? '#3ddc5a' : '#e02b2b';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(e.x, e.y, e.w, e.h);
-  // Label, placed away from the door edge so it never sits under the minimap.
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const labelY = e.y < 200 ? e.y + e.h + 22 : e.y - 22;
-  ctx.font = 'bold 15px Georgia, serif';
-  ctx.fillStyle = open ? '#3ddc5a' : '#ff7070';
-  ctx.fillText(open ? 'EXIT — OPEN' : `EXIT LOCKED · ${level.relics.length - taken} relic${level.relics.length - taken === 1 ? '' : 's'} left`, cx, labelY);
-}
-
-function drawRelics(ctx, level, time) {
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const r of level.relics) {
-    if (r.taken) continue;
-    const bob = Math.sin(time * 2 + r.x) * 3;
-    const glow = ctx.createRadialGradient(r.x, r.y + bob, 2, r.x, r.y + bob, 34);
-    glow.addColorStop(0, 'rgba(255,210,77,0.6)');
-    glow.addColorStop(1, 'rgba(255,210,77,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(r.x, r.y + bob, 34, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#ffd24d';
-    ctx.beginPath();
-    ctx.moveTo(r.x, r.y + bob - 11);
-    ctx.lineTo(r.x + 9, r.y + bob);
-    ctx.lineTo(r.x, r.y + bob + 11);
-    ctx.lineTo(r.x - 9, r.y + bob);
+    ctx.moveTo(sx - 42, 130);
+    ctx.lineTo(sx - 42, 40);
+    ctx.quadraticCurveTo(sx, -10, sx + 42, 40);
+    ctx.lineTo(sx + 42, 130);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = '#7a5a00';
-    ctx.beginPath();
-    ctx.arc(r.x, r.y + bob, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = 'bold 11px Georgia, serif';
-    ctx.fillStyle = '#ffd24d';
-    // Near the bottom edge the name goes above the diamond, so it never
-    // collides with the minimap or the controls hint.
-    const labelY = r.y > 600 ? r.y + bob - 26 : r.y + bob + 26;
-    ctx.fillText(r.name.toUpperCase(), r.x, labelY);
+    ctx.fillStyle = '#24365e';
+    ctx.fillRect(sx - 34, 46, 68, 80);
+    ctx.fillStyle = '#0e1424';
   }
-}
-
-function drawFuse(ctx, level) {
-  const f = level.fuse;
-  if (!f || f.used) return;
-  ctx.save();
-  ctx.fillStyle = '#222';
-  ctx.fillRect(f.x - 14, f.y - 18, 28, 36);
-  ctx.strokeStyle = '#ffd24d';
+  // Faint wall panelling lines.
+  ctx.strokeStyle = 'rgba(216,178,94,0.07)';
   ctx.lineWidth = 2;
-  ctx.strokeRect(f.x - 14, f.y - 18, 28, 36);
-  ctx.fillStyle = '#ffd24d';
-  ctx.font = 'bold 16px Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('⚡', f.x, f.y + 1);
-  ctx.font = 'bold 11px Georgia, serif';
-  // Near the bottom edge the label goes above the box, clear of the minimap.
-  ctx.fillText('FUSE BOX', f.x, f.y > 600 ? f.y - 32 : f.y + 32);
-  ctx.restore();
-}
-
-function drawCone(ctx, poly, fill, stroke) {
-  ctx.beginPath();
-  ctx.moveTo(poly[0].x, poly[0].y);
-  for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-}
-
-function drawCones(ctx, state) {
-  const level = state.level;
-  const blockers = [...level.walls, ...level.tall];
-  for (const g of state.guards) {
-    const poly = castCone(g.x, g.y, g.dir, g.half, g.range, blockers);
-    const fill = g.state === 'alert' ? 'rgba(255,60,60,0.30)'
-      : g.state === 'suspicious' || g.state === 'search' ? 'rgba(255,170,60,0.28)'
-      : 'rgba(255,220,90,0.20)';
-    drawCone(ctx, poly, fill, 'rgba(255,220,90,0.25)');
+  for (let x = 80; x < W; x += 160) {
+    ctx.beginPath(); ctx.moveTo(x, 150); ctx.lineTo(x, 600); ctx.stroke();
   }
-  for (const c of state.cameras) {
-    if (c.disabled) continue;
-    const poly = castCone(c.x, c.y, c.angle, c.half, c.range, blockers);
-    const fill = c.lock > 0.5 ? 'rgba(255,80,80,0.30)' : 'rgba(110,216,255,0.22)';
-    drawCone(ctx, poly, fill, 'rgba(110,216,255,0.3)');
-  }
-}
+  ctx.beginPath(); ctx.moveTo(0, 150); ctx.lineTo(W, 150); ctx.stroke();
 
-function drawPatrolRoutes(ctx, state) {
-  ctx.save();
-  ctx.setLineDash([2, 8]);
-  ctx.strokeStyle = 'rgba(160, 180, 255, 0.28)';
-  ctx.lineWidth = 1.5;
-  for (const g of state.guards) {
-    if (g.kind === 'sentry' || g.waypoints.length < 2) continue;
+  // --- lamps: brass fixtures with a warm glow halo (drawn before darkness)
+  for (const lamp of LAMPS) {
+    const flick = 1 - lamp.flicker * 0.4 * Math.sin(time * 0.011 + lamp.x);
+    ctx.strokeStyle = '#3a2f1d';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(lamp.x, 0); ctx.lineTo(lamp.x, lamp.y - 8); ctx.stroke();
+    const g = ctx.createRadialGradient(lamp.x, lamp.y, 2, lamp.x, lamp.y, 90 * flick);
+    g.addColorStop(0, 'rgba(255,202,106,0.85)');
+    g.addColorStop(0.4, 'rgba(255,180,80,0.25)');
+    g.addColorStop(1, 'rgba(255,180,80,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y, 90 * flick, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2c2214';
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = LAMP_GLOW;
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y + 2, 5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // --- moon shafts (pale, drawn under the darkness veil)
+  for (const shaft of MOON_SHAFTS) {
+    const grad = ctx.createLinearGradient(shaft.x, 0, shaft.x + 400 * shaft.angle, H);
+    grad.addColorStop(0, 'rgba(140,170,230,0.20)');
+    grad.addColorStop(1, 'rgba(140,170,230,0.03)');
+    ctx.fillStyle = grad;
     ctx.beginPath();
-    g.waypoints.forEach((w, i) => {
-      if (i === 0) ctx.moveTo(w.x, w.y);
-      else ctx.lineTo(w.x, w.y);
-    });
+    ctx.moveTo(shaft.x - shaft.width / 2, 0);
+    ctx.lineTo(shaft.x + shaft.width / 2, 0);
+    ctx.lineTo(shaft.x + shaft.width / 2 + H * shaft.angle, H);
+    ctx.lineTo(shaft.x - shaft.width / 2 + H * shaft.angle, H);
     ctx.closePath();
+    ctx.fill();
+  }
+
+  // --- platforms, floor, pipes, vents, cover
+  for (const p of PLATFORMS) {
+    if (p.floor) {
+      ctx.fillStyle = FLOOR;
+      ctx.fillRect(0, p.y, W, H - p.y);
+      ctx.fillStyle = '#2a2133';
+      ctx.fillRect(0, p.y, W, 6);
+      ctx.fillStyle = 'rgba(216,178,94,0.18)';
+      for (let x = 30; x < W; x += 90) ctx.fillRect(x, p.y + 30, 46, 3);
+    } else {
+      ctx.fillStyle = '#241d2f';
+      ctx.fillRect(p.x, p.y, p.w, 14);
+      ctx.fillStyle = '#3a2f45';
+      ctx.fillRect(p.x, p.y, p.w, 4);
+      ctx.fillStyle = '#171221';
+      ctx.fillRect(p.x + 8, p.y + 14, 6, 26);
+      ctx.fillRect(p.x + p.w - 14, p.y + 14, 6, 26);
+    }
+  }
+  for (const pipe of PIPES) {
+    ctx.strokeStyle = '#4a3f55';
+    ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.moveTo(pipe.x, pipe.yTop); ctx.lineTo(pipe.x, pipe.yBottom); ctx.stroke();
+    ctx.strokeStyle = '#6b5a78';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(pipe.x - 3, pipe.yTop); ctx.lineTo(pipe.x - 3, pipe.yBottom); ctx.stroke();
+  }
+  for (const v of VENTS) {
+    ctx.fillStyle = '#05050a';
+    ctx.fillRect(v.x, v.y, v.w, v.h);
+    ctx.strokeStyle = '#332a40';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(v.x, v.y, v.w, v.h);
+    ctx.strokeStyle = '#241d2e';
+    ctx.lineWidth = 2;
+    for (let x = v.x + 12; x < v.x + v.w; x += 16) {
+      ctx.beginPath(); ctx.moveTo(x, v.y + 4); ctx.lineTo(x, v.y + v.h - 4); ctx.stroke();
+    }
+  }
+  for (const c of COVER) {
+    if (c.kind === 'crate') {
+      ctx.fillStyle = '#2e2118';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.strokeStyle = '#4a3520';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(c.x + 2, c.y + 2, c.w - 4, c.h - 4);
+      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c.x + c.w, c.y + c.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(c.x + c.w, c.y); ctx.lineTo(c.x, c.y + c.h); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#1c1626';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.fillStyle = '#2c2338';
+      ctx.fillRect(c.x - 4, c.y, c.w + 8, 10);
+      ctx.fillRect(c.x - 4, c.y + c.h - 10, c.w + 8, 10);
+    }
+  }
+
+  // --- relics: glowing treasures in the dark
+  for (const r of relics) {
+    if (r.taken) continue;
+    const pulse = 0.7 + 0.3 * Math.sin(time * 0.004 + r.x);
+    const g = ctx.createRadialGradient(r.x, r.y, 2, r.x, r.y, 46 * pulse);
+    g.addColorStop(0, r.color);
+    g.addColorStop(0.35, r.color + '55');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 46 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = r.color;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#0a0a12';
+    ctx.beginPath(); ctx.arc(r.x, r.y, 4, 0, Math.PI * 2); ctx.fill();
+    // The name is drawn after the cones (see the second pass below) so a
+    // flashlight beam never washes it out.
+  }
+
+  // --- exit: a lit doorway, locked until all relics are taken
+  const open = state.relicsTaken >= 3;
+  const ex = EXIT;
+  const eg = ctx.createRadialGradient(ex.x + ex.w / 2, ex.y + ex.h / 2, 4, ex.x + ex.w / 2, ex.y + ex.h / 2, 170);
+  eg.addColorStop(0, open ? 'rgba(255,214,106,0.95)' : 'rgba(190,140,60,0.55)');
+  eg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = eg;
+  ctx.beginPath(); ctx.arc(ex.x + ex.w / 2, ex.y + ex.h / 2, 170, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = open ? '#ffd76a' : '#5a4a28';
+  ctx.fillRect(ex.x, ex.y, ex.w, ex.h);
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(ex.x + 8, ex.y + 8, ex.w - 16, ex.h - 8);
+  if (open) {
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillRect(ex.x + 14, ex.y + 14, ex.w - 28, ex.h - 20);
+    ctx.fillStyle = '#0a0a12';
+    ctx.font = 'bold 15px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXIT', ex.x + ex.w / 2, ex.y + 26);
+  } else {
+    ctx.fillStyle = GOLD;
+    ctx.font = 'bold 13px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('LOCKED', ex.x + ex.w / 2, ex.y - 12);
+    ctx.fillText(`${state.relicsTaken}/3 RELICS`, ex.x + ex.w / 2, ex.y + ex.h + 18);
+  }
+
+  // --- guards: dark silhouettes with a bright flashlight cone
+  for (const g of guards) {
+    drawGuard(ctx, g, time);
+  }
+
+  // --- the thief: a lean silhouette with a pale scarf edge
+  drawPlayer(ctx, player, time);
+
+  // --- flashlight cones as visible light (drawn over the scene, under darkness)
+  for (const cone of cones) {
+    const tipX = cone.x + Math.cos(cone.angle) * cone.range;
+    const tipY = cone.y + Math.sin(cone.angle) * cone.range;
+    const spread = Math.tan(cone.half) * cone.range;
+    const px = -Math.sin(cone.angle) * spread, py = Math.cos(cone.angle) * spread;
+    const cg = ctx.createLinearGradient(cone.x, cone.y, tipX, tipY);
+    cg.addColorStop(0, 'rgba(255,240,180,0.34)');
+    cg.addColorStop(1, 'rgba(255,240,180,0.02)');
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.moveTo(cone.x, cone.y);
+    ctx.lineTo(tipX + px, tipY + py);
+    ctx.lineTo(tipX - px, tipY - py);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // --- dust motes drifting in the light shafts
+  ctx.fillStyle = 'rgba(255,230,170,0.5)';
+  for (let i = 0; i < 26; i++) {
+    const mx = (380 + ((i * 137) % 90) + Math.sin(time * 0.0004 + i) * 8 + (i % 2 ? 540 : 0)) % W;
+    const my = (i * 53 + time * 0.02) % 620;
+    ctx.fillRect(mx, my, 2, 2);
+  }
+
+  // Relic names, drawn over the cones so they stay legible.
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.font = '11px Georgia, serif';
+  ctx.textAlign = 'center';
+  for (const r of relics) {
+    if (!r.taken) ctx.fillText(r.name, r.x, r.y - 20);
+  }
+
+  // --- the darkness veil: light cuts holes in it
+  drawDarkness(ctx, cones, time, W, H, ensureLightCanvas(W, H));
+
+  // Exit label redrawn over the veil so it stays readable in the dark.
+  if (!open) {
+    ctx.fillStyle = GOLD;
+    ctx.font = 'bold 13px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('LOCKED', ex.x + ex.w / 2, ex.y - 12);
+    ctx.fillText(`${state.relicsTaken}/3 RELICS`, ex.x + ex.w / 2, ex.y + ex.h + 18);
+  } else {
+    ctx.fillStyle = '#ffe9a8';
+    ctx.font = 'bold 15px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXIT', ex.x + ex.w / 2, ex.y + 26);
+  }
+
+  // Noise ring around the thief when loud (guards can hear it).
+  if (player.noisePulse > 0.25) {
+    ctx.strokeStyle = `rgba(255,120,90,${player.noisePulse * 0.7})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y - player.h / 2, 26 + player.noisePulse * 40, 0, Math.PI * 2);
     ctx.stroke();
   }
-  ctx.restore();
 }
 
 function drawGuard(ctx, g, time) {
-  const bob = Math.sin(g.walkPhase) * 1.5;
-  const body = g.kind === 'elite' ? '#7a1f2b' : g.kind === 'sentry' ? '#3d4a5c' : '#2c4a7a';
-  const trim = g.kind === 'elite' ? '#ff8080' : '#9fc3ff';
-  // Feet (walk animation).
-  ctx.fillStyle = '#101018';
-  const fx = Math.cos(g.dir);
-  const fy = Math.sin(g.dir);
-  const px = -fy;
-  const py = fx;
-  const step = Math.sin(g.walkPhase) * 5;
+  const x = g.x, y = g.y;
+  const alert = g.state === 'chase';
+  const sus = g.suspicion >= 35;
+  // Body: tall dark silhouette, coat and cap brim, with a faint rim light
+  // on the side the flashlight faces so guards read against the floor.
+  ctx.fillStyle = alert ? '#33121a' : '#1b1b2c';
   ctx.beginPath();
-  ctx.arc(g.x + px * 6 + fx * step, g.y + py * 6 + fy * step, 4, 0, Math.PI * 2);
-  ctx.arc(g.x - px * 6 - fx * step, g.y - py * 6 - fy * step, 4, 0, Math.PI * 2);
+  ctx.moveTo(x - 11, y);
+  ctx.lineTo(x - 12, y - 40);
+  ctx.lineTo(x - 7, y - 48);
+  ctx.lineTo(x + 7, y - 48);
+  ctx.lineTo(x + 12, y - 40);
+  ctx.lineTo(x + 11, y);
+  ctx.closePath();
   ctx.fill();
-  // Body.
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.arc(g.x, g.y + bob * 0.3, 13, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = trim;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  // Helmet brim + facing tick.
-  ctx.fillStyle = '#d8d2c4';
-  ctx.beginPath();
-  ctx.arc(g.x + fx * 6, g.y + fy * 6 + bob * 0.3, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffe9b0';
-  ctx.beginPath();
-  ctx.arc(g.x + fx * 19, g.y + fy * 19, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-  // Elite gets a red sash.
-  if (g.kind === 'elite') {
-    ctx.strokeStyle = '#ffd24d';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(g.x - 8, g.y - 8);
-    ctx.lineTo(g.x + 8, g.y + 8);
-    ctx.stroke();
-  }
-  // Suspicion arc over the guard.
-  if (g.suspicion > 0.03 && g.state !== 'alert') {
-    ctx.strokeStyle = g.suspicion >= 0.5 ? '#ff9a3d' : '#ffd24d';
-    ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.arc(g.x, g.y, 20, -Math.PI / 2, -Math.PI / 2 + g.suspicion * Math.PI * 2);
-    ctx.stroke();
-  }
-  // Big readable "?" / "!".
-  if (g.state === 'alert') {
-    const pop = 1 + Math.sin(time * 10) * 0.08 + g.flash * 0.5;
-    ctx.font = `bold ${Math.round(30 * pop)}px Georgia, serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ff2b2b';
-    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-    ctx.lineWidth = 4;
-    ctx.strokeText('!', g.x, g.y - 32);
-    ctx.fillText('!', g.x, g.y - 32);
-  } else if (g.state === 'suspicious' || g.state === 'search') {
+  // Head + cap.
+  ctx.fillStyle = '#0c0c14';
+  ctx.beginPath(); ctx.arc(x, y - 54, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.fillRect(x - 12, y - 62, 24, 4);
+  // Flashlight in the leading hand.
+  const handX = x + g.dir * 13, handY = y - 34;
+  ctx.fillStyle = '#c9a44a';
+  ctx.fillRect(handX - 4, handY - 3, 10, 6);
+  ctx.fillStyle = '#fff3c4';
+  ctx.beginPath(); ctx.arc(handX + g.dir * 6, handY, 3, 0, Math.PI * 2); ctx.fill();
+  // Walking bob.
+  const bob = g.state === 'patrol' ? Math.sin(time * 0.012 + g.id * 3) * 1.5 : 0;
+  ctx.fillStyle = '#05050a';
+  ctx.fillRect(x - 10, y - 2 + bob, 7, 2);
+  ctx.fillRect(x + 3, y - 2 - bob, 7, 2);
+  // State mark: "?" amber, "!" red, with a glow.
+  if (alert || sus) {
+    const mark = alert ? '!' : '?';
+    const col = alert ? '#ff4d4d' : '#ffb84d';
     ctx.font = 'bold 26px Georgia, serif';
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffb347';
-    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-    ctx.lineWidth = 4;
-    ctx.strokeText('?', g.x, g.y - 30);
-    ctx.fillText('?', g.x, g.y - 30);
+    ctx.fillStyle = col;
+    ctx.fillText(mark, x, y - 74 + Math.sin(time * 0.008) * 2);
   }
 }
 
-function drawCamera(ctx, c, time) {
-  if (c.disabled) {
-    ctx.fillStyle = '#333';
-    ctx.fillRect(c.x - 8, c.y - 8, 16, 16);
-    ctx.strokeStyle = '#555';
-    ctx.strokeRect(c.x - 8, c.y - 8, 16, 16);
-    return;
-  }
-  ctx.fillStyle = '#1c2733';
-  ctx.fillRect(c.x - 9, c.y - 9, 18, 18);
-  ctx.strokeStyle = '#6fd8ff';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(c.x - 9, c.y - 9, 18, 18);
-  // Lens points along the cone.
-  ctx.fillStyle = c.lock > 0.5 ? '#ff4040' : '#6fd8ff';
+function drawPlayer(ctx, p, time) {
+  const x = p.x, y = p.y;
+  const h = p.h;
+  const crouch = p.crawling ? 0.55 : 1;
+  const runBob = p.moving && p.onGround ? Math.sin(time * 0.02) * 2 : 0;
+  // Cloak silhouette.
+  ctx.fillStyle = '#0d0d16';
   ctx.beginPath();
-  ctx.arc(c.x + Math.cos(c.angle) * 8, c.y + Math.sin(c.angle) * 8, 4, 0, Math.PI * 2);
+  ctx.moveTo(x - 10, y);
+  ctx.lineTo(x - 11, y - h * 0.75 * crouch);
+  ctx.quadraticCurveTo(x, y - h * crouch - 6, x + 11, y - h * 0.75 * crouch);
+  ctx.lineTo(x + 10, y);
+  ctx.closePath();
   ctx.fill();
-  // Lock arc.
-  if (c.lock > 0.03) {
-    ctx.strokeStyle = c.lock > 0.5 ? '#ff4040' : '#6fd8ff';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, 15, -Math.PI / 2, -Math.PI / 2 + c.lock * Math.PI * 2);
-    ctx.stroke();
-  }
-}
-
-function drawPlayer(ctx, p) {
-  const crouch = p.sneaking ? 0.72 : 1;
-  const bob = p.moving ? Math.sin(p.walkPhase) * 1.5 : Math.sin(Date.now() / 500) * 0.5;
-  // Cloak.
-  ctx.fillStyle = '#241a33';
+  // Hood + pale scarf edge so the thief reads against the dark.
+  ctx.fillStyle = '#1a1a28';
+  ctx.beginPath(); ctx.arc(x, y - h * crouch - 2, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = p.hidden ? '#b9c8e8' : '#ffd76a';
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
-  ctx.ellipse(p.x, p.y + bob * 0.3, 13, 13 * crouch, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#8a6fc0';
-  ctx.lineWidth = 2;
+  ctx.arc(x, y - h * crouch - 2, 8, Math.PI * 0.15, Math.PI * 0.85);
   ctx.stroke();
-  // Hood + face shadow.
-  ctx.fillStyle = '#17102a';
-  ctx.beginPath();
-  ctx.arc(p.x + Math.cos(p.dir) * 3, p.y + Math.sin(p.dir) * 3 + bob * 0.3, 8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#e8d8a8';
-  ctx.beginPath();
-  ctx.arc(p.x + Math.cos(p.dir) * 5, p.y + Math.sin(p.dir) * 5 + bob * 0.3, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-  // Sneak = a faint "hidden" ring when crouched.
-  if (p.sneaking) {
-    ctx.strokeStyle = 'rgba(140, 200, 255, 0.5)';
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 18, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
+  // Eyes: two faint glints.
+  ctx.fillStyle = '#dfe8ff';
+  ctx.fillRect(x + p.facing * 3 - 1, y - h * crouch - 4, 2, 2);
+  // Feet.
+  ctx.fillStyle = '#05050a';
+  ctx.fillRect(x - 9, y - 3 + runBob, 6, 3);
+  ctx.fillRect(x + 3, y - 3 - runBob, 6, 3);
+  // Sneak pose hint: a small "shh" crouch line.
+  if (p.sneaking || p.crawling) {
+    ctx.fillStyle = 'rgba(143,163,200,0.8)';
+    ctx.font = '10px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.crawling ? 'crawling' : 'sneaking', x, y - h * crouch - 16);
   }
-  // Click-to-move marker.
-  if (p.moveTarget) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(p.moveTarget.x, p.moveTarget.y, 8, 0, Math.PI * 2);
-    ctx.moveTo(p.moveTarget.x - 12, p.moveTarget.y);
-    ctx.lineTo(p.moveTarget.x + 12, p.moveTarget.y);
-    ctx.moveTo(p.moveTarget.x, p.moveTarget.y - 12);
-    ctx.lineTo(p.moveTarget.x, p.moveTarget.y + 12);
-    ctx.stroke();
-  }
-}
-
-function drawToast(ctx, state) {
-  if (!state.toast || state.toastTimer <= 0) return;
-  const alpha = Math.min(1, state.toastTimer);
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.font = 'bold 18px Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const w = ctx.measureText(state.toast).width + 36;
-  ctx.fillStyle = 'rgba(8, 8, 14, 0.88)';
-  ctx.fillRect(640 - w / 2, 66, w, 34);
-  ctx.strokeStyle = '#e8b64c';
-  ctx.strokeRect(640 - w / 2, 66, w, 34);
-  ctx.fillStyle = '#ffd24d';
-  ctx.fillText(state.toast, 640, 84);
-  ctx.restore();
-}
-
-function drawAlertPulse(ctx, state, time) {
-  const anyAlert = state.guards.some((g) => g.state === 'alert');
-  const intensity = anyAlert ? 0.55 : state.alarm >= 80 ? 0.45 : state.alarm / 100 * 0.3;
-  if (intensity <= 0.01) return;
-  const pulse = 0.6 + 0.4 * Math.sin(time * 6);
-  const a = intensity * pulse;
-  const grad = ctx.createRadialGradient(640, 386, 300, 640, 386, 720);
-  grad.addColorStop(0, 'rgba(255,0,0,0)');
-  grad.addColorStop(1, `rgba(255,20,20,${a.toFixed(3)})`);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 52, 1280, 668);
-  // Hard red frame.
-  ctx.strokeStyle = `rgba(255,30,30,${(a * 0.9).toFixed(3)})`;
-  ctx.lineWidth = 10;
-  ctx.strokeRect(5, 57, 1270, 658);
-}
-
-function drawVignette(ctx) {
-  const g = ctx.createRadialGradient(640, 386, 320, 640, 386, 760);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(1, 'rgba(0,0,0,0.42)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 52, 1280, 668);
-}
-
-/** Draw the whole world for the current state. */
-export function drawWorld(ctx, state, time) {
-  const level = state.level;
-  drawFloor(ctx, level);
-  drawProps(ctx, level);
-  drawShadowsAndLamps(ctx, level);
-  drawWalls(ctx, level);
-  drawExit(ctx, state);
-  drawRelics(ctx, level, time);
-  drawFuse(ctx, level);
-  drawPatrolRoutes(ctx, state);
-  drawCones(ctx, state);
-  // Tall cover drawn after cones so shelves read as solid objects.
-  // A statue plinth keeps its statue look instead of the shelf texture.
-  for (const t of level.tall) {
-    const isStatue = level.props.some((p) => p.kind === 'statue' && p.x === t.x && p.y === t.y);
-    if (isStatue) {
-      ctx.fillStyle = '#8f8578';
-      ctx.fillRect(t.x - 3, t.y - 3, t.w + 6, t.h + 6);
-      ctx.fillStyle = '#cfc4ae';
-      ctx.beginPath();
-      ctx.arc(t.x + t.w / 2, t.y + t.h / 2, t.w * 0.32, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillRect(t.x + t.w / 2 - 4, t.y + 2, 8, t.h * 0.4);
-      continue;
-    }
-    ctx.fillStyle = '#3a2a18';
-    ctx.fillRect(t.x, t.y, t.w, t.h);
-    ctx.strokeStyle = '#8a6b3f';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(t.x + 2, t.y + 2, t.w - 4, t.h - 4);
-    ctx.strokeStyle = 'rgba(255,220,150,0.25)';
-    ctx.beginPath();
-    for (let x = t.x + 14; x < t.x + t.w; x += 28) {
-      ctx.moveTo(x, t.y + 4);
-      ctx.lineTo(x, t.y + t.h - 4);
-    }
-    ctx.stroke();
-  }
-  for (const c of state.cameras) drawCamera(ctx, c, time);
-  for (const g of state.guards) drawGuard(ctx, g, time);
-  drawPlayer(ctx, state.player);
-  drawVignette(ctx);
-  drawAlertPulse(ctx, state, time);
-  drawToast(ctx, state);
 }

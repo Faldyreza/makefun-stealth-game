@@ -1,58 +1,62 @@
-// input.js — keyboard (WASD / arrows, Shift sneak, P pause, R restart,
-// M mute) and click-to-move. Coordinates are converted from the scaled
-// canvas back into the 1280x720 game space.
+// input.js — keyboard + mouse. Arrows / WASD to move, Shift to sneak,
+// C to crawl, Up to jump or climb pipes, P pause, M mute, R restart.
+// Clicking the canvas also wakes audio (browsers require a gesture).
 
-export class Input {
-  constructor(canvas, onAction) {
-    this.up = false;
-    this.down = false;
-    this.left = false;
-    this.right = false;
-    this.sneak = false;
-    this.canvas = canvas;
-    this.onAction = onAction; // (action) => void for pause/restart/mute/enter
-    this.click = null;         // {x, y} in game space, consumed by main
+export function createInput() {
+  const input = {
+    left: false, right: false, up: false, down: false,
+    sneak: false, upPressed: false, crawlPressed: false,
+    pausePressed: false, mutePressed: false, restartPressed: false,
+    anyPressed: false,
+  };
 
-    window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
-      switch (e.code) {
-        case 'KeyW': case 'ArrowUp': this.up = true; e.preventDefault(); break;
-        case 'KeyS': case 'ArrowDown': this.down = true; e.preventDefault(); break;
-        case 'KeyA': case 'ArrowLeft': this.left = true; e.preventDefault(); break;
-        case 'KeyD': case 'ArrowRight': this.right = true; e.preventDefault(); break;
-        case 'ShiftLeft': case 'ShiftRight': this.sneak = true; break;
-        case 'KeyP': this.onAction('pause'); break;
-        case 'KeyR': this.onAction('restart'); break;
-        case 'KeyM': this.onAction('mute'); break;
-        case 'Enter': this.onAction('enter'); break;
-        case 'Escape': this.onAction('pause'); break;
-      }
-    });
-    window.addEventListener('keyup', (e) => {
-      switch (e.code) {
-        case 'KeyW': case 'ArrowUp': this.up = false; break;
-        case 'KeyS': case 'ArrowDown': this.down = false; break;
-        case 'KeyA': case 'ArrowLeft': this.left = false; break;
-        case 'KeyD': case 'ArrowRight': this.right = false; break;
-        case 'ShiftLeft': case 'ShiftRight': this.sneak = false; break;
-      }
-    });
-    canvas.addEventListener('mousedown', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) * (1280 / rect.width);
-      const y = (e.clientY - rect.top) * (720 / rect.height);
-      this.click = { x, y };
-      this.onAction('click');
-    });
-    window.addEventListener('blur', () => {
-      this.up = this.down = this.left = this.right = this.sneak = false;
-    });
-  }
+  const down = (e) => {
+    input.anyPressed = true;
+    switch (e.code) {
+      case 'ArrowLeft': case 'KeyA': input.left = true; break;
+      case 'ArrowRight': case 'KeyD': input.right = true; break;
+      case 'ArrowUp': case 'KeyW':
+        if (!input.up) input.upPressed = true;
+        input.up = true; break;
+      case 'ArrowDown': case 'KeyS': input.down = true; break;
+      case 'ShiftLeft': case 'ShiftRight': input.sneak = true; break;
+      case 'KeyC': input.crawlPressed = true; break;
+      case 'KeyP': case 'Escape': input.pausePressed = true; break;
+      case 'KeyM': input.mutePressed = true; break;
+      case 'KeyR': input.restartPressed = true; break;
+      case 'Enter': case 'Space': input.anyPressed = true; break;
+    }
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
+  };
+  const up = (e) => {
+    switch (e.code) {
+      case 'ArrowLeft': case 'KeyA': input.left = false; break;
+      case 'ArrowRight': case 'KeyD': input.right = false; break;
+      case 'ArrowUp': case 'KeyW': input.up = false; break;
+      case 'ArrowDown': case 'KeyS': input.down = false; break;
+      case 'ShiftLeft': case 'ShiftRight': input.sneak = false; break;
+    }
+  };
 
-  /** Take the pending click target (null when there is none). */
-  takeClick() {
-    const c = this.click;
-    this.click = null;
-    return c;
-  }
+  window.addEventListener('keydown', down);
+  window.addEventListener('keyup', up);
+  window.addEventListener('mousedown', () => { input.anyPressed = true; });
+  return input;
+}
+
+// Edge-triggered flags are consumed once per frame by the game loop.
+export function consumeEdges(input) {
+  const edges = {
+    upPressed: input.upPressed,
+    crawlPressed: input.crawlPressed,
+    pausePressed: input.pausePressed,
+    mutePressed: input.mutePressed,
+    restartPressed: input.restartPressed,
+  };
+  input.upPressed = false;
+  input.crawlPressed = false;
+  input.pausePressed = false;
+  input.mutePressed = false;
+  input.restartPressed = false;
+  return edges;
 }

@@ -1,120 +1,125 @@
-// player.js — the thief: movement, sneaking, noise, relic pickup.
-// Walk is fast but loud and easy to spot; sneak (Shift) is slow, quiet and
-// much harder to spot. Click-to-move walks the thief to a floor point.
+// player.js — the thief: run, sneak, climb pipes, crawl vents, make noise.
+// Noise is the second stealth currency: fast feet and hard landings travel.
 
-import { solidRects } from './levels.js';
-import { circleHitsRect, resolveCircle } from './lighting.js';
+import { LEVEL, PLATFORMS, PIPES, ventAt } from './level.js';
 
-export const WALK_SPEED = 175;
-export const SNEAK_SPEED = 98;
-export const PLAYER_RADIUS = 13;
+export function createPlayer() {
+  return {
+    x: 60, y: LEVEL.groundY, vx: 0, vy: 0,
+    w: 22, h: 52,
+    facing: 1,                 // 1 = right, -1 = left
+    onGround: true,
+    sneaking: false,
+    crawling: false,
+    climbing: false,
+    noise: 0,                  // 0..1, decays each frame; guards hear it
+    noisePulse: 0,             // recent noise event strength for the HUD ring
+    light: 0.05,               // light level at the thief's chest
+    hidden: true,              // in shadow right now
+    stepTimer: 0,
+    moving: false,
+  };
+}
 
-export class Player {
-  constructor(spawn) {
-    this.x = spawn.x;
-    this.y = spawn.y;
-    this.dir = -Math.PI / 2; // facing up at spawn
-    this.sneaking = false;
-    this.moving = false;
-    this.noise = 0;           // noise radius this frame (0 while sneaking)
-    this.walkPhase = 0;       // walk-cycle phase for the sprite animation
-    this.moveTarget = null;   // {x, y} for click-to-move, or null
-    this.stepTimer = 0;       // counts down to the next footstep tick
+// Nearest pipe the player can grab (within reach, roughly at body height).
+function pipeNear(p) {
+  for (const pipe of PIPES) {
+    if (Math.abs(p.x - pipe.x) < 16 && p.y >= pipe.yTop - 10 && p.y <= pipe.yBottom + 10) return pipe;
+  }
+  return null;
+}
+
+export function updatePlayer(p, input, dt, time) {
+  const speed = p.crawling ? 0.9 : p.sneaking ? 1.5 : 3.4;
+  let move = 0;
+  if (input.left) move -= 1;
+  if (input.right) move += 1;
+
+  // Climbing: hold Up beside a pipe.
+  const pipe = pipeNear(p);
+  if (pipe && input.up && !p.crawling) {
+    p.climbing = true;
+    p.vy = 0;
+    p.y -= 2.2 * dt;
+    p.x = pipe.x;
+    if (p.y <= pipe.yTop) { p.y = pipe.yTop; p.climbing = false; }
+    p.moving = true;
+  } else if (p.climbing && input.down) {
+    p.y += 2.2 * dt;
+    if (p.y >= pipe.yBottom) { p.y = pipe.yBottom; p.climbing = false; }
+    p.moving = true;
+  } else {
+    p.climbing = false;
   }
 
-  reset(spawn) {
-    this.x = spawn.x;
-    this.y = spawn.y;
-    this.dir = -Math.PI / 2;
-    this.sneaking = false;
-    this.moving = false;
-    this.noise = 0;
-    this.walkPhase = 0;
-    this.moveTarget = null;
-    this.stepTimer = 0;
-  }
+  if (!p.climbing) {
+    p.vx = move * speed;
+    p.x += p.vx * dt;
+    p.moving = move !== 0;
+    if (move !== 0) p.facing = move;
 
-  /** Keyboard vector, or a step toward the click target. */
-  update(dt, input, level) {
-    const solids = solidRects(level);
-    let mx = 0;
-    let my = 0;
-    if (input.left) mx -= 1;
-    if (input.right) mx += 1;
-    if (input.up) my -= 1;
-    if (input.down) my += 1;
-
-    if (mx === 0 && my === 0 && this.moveTarget) {
-      const dx = this.moveTarget.x - this.x;
-      const dy = this.moveTarget.y - this.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 8) {
-        this.moveTarget = null;
-      } else {
-        mx = dx / d;
-        my = dy / d;
+    // Gravity and platform landing.
+    p.vy += LEVEL.gravity * dt;
+    p.y += p.vy * dt;
+    p.onGround = false;
+    for (const plat of PLATFORMS) {
+      if (p.x + p.w / 2 > plat.x && p.x - p.w / 2 < plat.x + plat.w) {
+        const feet = p.y;
+        const prevFeet = feet - p.vy * dt;
+        if (p.vy >= 0 && prevFeet <= plat.y + 2 && feet >= plat.y - 2) {
+          if (p.vy > 9) makeNoise(p, 0.9, 'landing'); // hard landing is loud
+          p.y = plat.y;
+          p.vy = 0;
+          p.onGround = true;
+        }
       }
     }
+    // Jump with Up when standing (not while crawling).
+    if (input.upPressed && p.onGround && !p.crawling) {
+      p.vy = -11.5;
+      p.onGround = false;
+      makeNoise(p, 0.25, 'jump');
+    }
+    // Drop through a ledge with Down + Jump.
+    if (input.down && input.upPressed && p.onGround) {
+      p.y += 4;
+    }
+  }
 
-    this.sneaking = !!input.sneak;
-    const len = Math.hypot(mx, my);
-    this.moving = len > 0.01;
-    if (this.moving) {
-      const speed = this.sneaking ? SNEAK_SPEED : WALK_SPEED;
-      mx /= len; my /= len;
-      this.dir = Math.atan2(my, mx);
-      // Move axis by axis so the thief slides along walls instead of sticking.
-      let nx = this.x + mx * speed * dt;
-      let hit = false;
-      for (const r of solids) if (circleHitsRect(nx, this.y, PLAYER_RADIUS, r)) { hit = true; break; }
-      if (!hit) this.x = nx;
-      let ny = this.y + my * speed * dt;
-      hit = false;
-      for (const r of solids) if (circleHitsRect(this.x, ny, PLAYER_RADIUS, r)) { hit = true; break; }
-      if (!hit) this.y = ny;
-      const fixed = resolveCircle(this.x, this.y, PLAYER_RADIUS, solids);
-      this.x = fixed.x; this.y = fixed.y;
-      this.walkPhase += dt * (this.sneaking ? 7 : 11);
-      this.noise = this.sneaking ? 0 : 70;
-      this.stepTimer -= dt;
+  // Sneak / crawl toggles.
+  p.sneaking = input.sneak && !p.crawling;
+  const vent = ventAt(p.x, p.y - 20);
+  if (input.crawlPressed) p.crawling = !p.crawling && (vent || p.onGround);
+  if (p.crawling && !vent && p.onGround && move === 0) {
+    // crawling is allowed on the floor too, but slow
+  }
+  if (p.crawling) p.h = 26; else p.h = 52;
+
+  // Footsteps: noise and a soft tick, louder and faster when running.
+  p.noise = Math.max(0, p.noise - 0.02 * dt);
+  p.noisePulse = Math.max(0, p.noisePulse - 0.05 * dt);
+  if (p.moving && p.onGround && !p.climbing) {
+    p.stepTimer += dt * (p.crawling ? 0.5 : p.sneaking ? 0.7 : 1.6);
+    if (p.stepTimer > 22) {
+      p.stepTimer = 0;
+      const loud = p.crawling ? 0.08 : p.sneaking ? 0.15 : 0.5;
+      makeNoise(p, loud, 'step');
+      p.stepped = true;
     } else {
-      this.noise = 0;
+      p.stepped = false;
     }
+  } else {
+    p.stepped = false;
   }
 
-  /** True once per footstep while moving (drives the footstep sound). */
-  stepped() {
-    if (!this.moving || this.stepTimer > 0) return false;
-    this.stepTimer = this.sneaking ? 0.55 : 0.34;
-    return true;
-  }
+  // Walls of the hall.
+  p.x = Math.max(18, Math.min(LEVEL.width - 18, p.x));
+  if (p.y > LEVEL.groundY) { p.y = LEVEL.groundY; p.vy = 0; p.onGround = true; }
+  return p;
+}
 
-  /** Collect any relic within reach; returns the relic taken, or null. */
-  tryPickup(level) {
-    for (const relic of level.relics) {
-      if (!relic.taken && Math.hypot(relic.x - this.x, relic.y - this.y) < 30) {
-        relic.taken = true;
-        return relic;
-      }
-    }
-    return null;
-  }
-
-  /** Touch the fuse box to cut the cameras; returns true when it happens. */
-  tryFuse(level) {
-    const f = level.fuse;
-    if (f && !f.used && Math.hypot(f.x - this.x, f.y - this.y) < 34) {
-      f.used = true;
-      return true;
-    }
-    return false;
-  }
-
-  /** True when the thief stands on the exit and it is unlocked. */
-  atExit(level, unlocked) {
-    if (!unlocked) return false;
-    const e = level.exit;
-    return this.x > e.x - 6 && this.x < e.x + e.w + 6 &&
-           this.y > e.y - 6 && this.y < e.y + e.h + 6;
-  }
+export function makeNoise(p, amount, kind) {
+  p.noise = Math.min(1, Math.max(p.noise, amount));
+  p.noisePulse = Math.max(p.noisePulse, amount);
+  p.lastNoiseKind = kind;
 }

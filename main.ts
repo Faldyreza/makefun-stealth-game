@@ -1,20 +1,19 @@
-// main.ts — the hand-in program for NIGHT SHIFT: THE GRAND HEIST.
-// Copies game/ and screenshots/ into the output directory and writes
-// /output/dossier.json with buildDossier from vendor/makefun-game.ts.
-// Runs on Node 22 with the standard library only; no network, no build step.
-
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// main.ts — hands this entry in: copies game/ and screenshots/ to the output
+// directory and writes dossier.json with buildDossier from vendor/makefun-game.ts.
+// Node 22 standard library only; deterministic: two runs write identical bytes.
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = dirname(fileURLToPath(import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const repoDir = new URL('.', import.meta.url).pathname;
 
-mkdirSync(join(outDir, 'game'), { recursive: true });
-mkdirSync(join(outDir, 'screenshots'), { recursive: true });
-cpSync(join(repoRoot, 'game'), join(outDir, 'game'), { recursive: true });
-cpSync(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'), { recursive: true });
+mkdirSync(outDir, { recursive: true });
+for (const name of ['game', 'screenshots']) {
+  const dest = join(outDir, name);
+  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+  cpSync(join(repoDir, name), dest, { recursive: true });
+}
 
 const dossier = buildDossier(outDir, {
   text_max_bytes: 163840,
@@ -23,4 +22,4 @@ const dossier = buildDossier(outDir, {
   game_max_bytes: 50331648,
 });
 writeFileSync(join(outDir, 'dossier.json'), dossier);
-console.log(`dossier written: ${dossier.length} bytes`);
+console.log(`dossier written: ${dossier.length} bytes -> ${join(outDir, 'dossier.json')}`);

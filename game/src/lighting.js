@@ -1,142 +1,108 @@
-// lighting.js — raycast vision cones, line of sight, shadow and lamp light.
-// A cone is a fan of ~30 rays; each ray stops at the first wall or tall cover
-// it hits, so cones are visibly clipped by cover instead of painting over it.
+// lighting.js — the light/shadow map: darkness hides you, light exposes you.
+// Lamp pools, moon shafts and guard flashlight cones are the only light.
+// lightAt(x, y) returns 0 (pitch dark) .. 1 (fully lit) and drives both the
+// visibility meter and the darkness overlay the player sees.
 
-/** Ray (ox,oy) + t*(dx,dy) vs axis-aligned rect; returns nearest hit t or null. */
-export function rayRect(ox, oy, dx, dy, r) {
-  let tMin = 0;
-  let tMax = Infinity;
-  if (Math.abs(dx) < 1e-9) {
-    if (ox < r.x || ox > r.x + r.w) return null;
-  } else {
-    let t1 = (r.x - ox) / dx;
-    let t2 = (r.x + r.w - ox) / dx;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
-    if (tMin > tMax) return null;
-  }
-  if (Math.abs(dy) < 1e-9) {
-    if (oy < r.y || oy > r.y + r.h) return null;
-  } else {
-    let t1 = (r.y - oy) / dy;
-    let t2 = (r.y + r.h - oy) / dy;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
-    if (tMin > tMax) return null;
-  }
-  return tMin;
+import { LAMPS, MOON_SHAFTS } from './level.js';
+
+// Warm lamp glow: soft radial falloff around each lamp's pool on the floor.
+function lampLight(x, y, lamp, time) {
+  const flick = 1 - lamp.flicker * Math.sin(time * 0.011 + lamp.x) * Math.sin(time * 0.023 + lamp.x * 2);
+  const dx = x - lamp.x;
+  const dy = y - (lamp.y + 460); // the pool lands on the floor, not mid-air
+  const d = Math.sqrt(dx * dx + dy * dy * 1.6);
+  const r = lamp.radius * flick;
+  if (d >= r) return 0;
+  const t = 1 - d / r;
+  return t * t * 0.85;
 }
 
-/** Distance along a ray to the nearest blocker, capped at maxDist. */
-export function rayHitDistance(ox, oy, angle, maxDist, blockers) {
-  const dx = Math.cos(angle);
-  const dy = Math.sin(angle);
-  let best = maxDist;
-  for (const r of blockers) {
-    const t = rayRect(ox, oy, dx, dy, r);
-    if (t !== null && t > 0 && t < best) best = t;
+// Cold moon shaft: a slanted band of pale light from a high window.
+function moonLight(x, y, shaft) {
+  const slant = (y - shaft.topY) * shaft.angle;
+  const cx = shaft.x + slant;
+  const d = Math.abs(x - cx);
+  if (d > shaft.width / 2 || y < shaft.topY) return 0;
+  return (1 - d / (shaft.width / 2)) * 0.55;
+}
+
+// A guard flashlight cone: bright near the guard, fading with distance and
+// falling off toward the cone's edges. cone = {x, y, angle, range, half}.
+export function coneLight(x, y, cone) {
+  const dx = x - cone.x, dy = y - cone.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > cone.range || dist < 4) return dist < 4 ? 0.9 : 0;
+  const ang = Math.atan2(dy, dx);
+  let diff = Math.abs(ang - cone.angle);
+  if (diff > Math.PI) diff = 2 * Math.PI - diff;
+  if (diff > cone.half) return 0;
+  const edge = 1 - diff / cone.half;
+  const fall = 1 - dist / cone.range;
+  return Math.min(1, edge * edge * (0.35 + 0.65 * fall) + 0.25 * fall);
+}
+
+// Combined light level at a point. cones: array of guard flashlight cones.
+export function lightAt(x, y, cones, time) {
+  let v = 0.05; // the hall is never perfectly black
+  for (const lamp of LAMPS) v = Math.max(v, lampLight(x, y, lamp, time));
+  for (const shaft of MOON_SHAFTS) v = Math.max(v, moonLight(x, y, shaft));
+  for (const cone of cones) v = Math.max(v, coneLight(x, y, cone));
+  return Math.min(1, v);
+}
+
+// Draw the darkness overlay: a near-black veil with holes cut where light falls.
+// Called after the lit scene is drawn; uses 'destination-out' on an offscreen
+// canvas so the light pools feel like real light cutting the dark.
+export function drawDarkness(ctx, cones, time, w, h, lightCanvas) {
+  const lc = lightCanvas.getContext('2d');
+  lc.clearRect(0, 0, w, h);
+  lc.globalCompositeOperation = 'source-over';
+  lc.fillStyle = 'rgba(4,4,10,0.86)';
+  lc.fillRect(0, 0, w, h);
+  lc.globalCompositeOperation = 'destination-out';
+  // Lamp pools.
+  for (const lamp of LAMPS) {
+    const flick = 1 - lamp.flicker * 0.5 * Math.sin(time * 0.011 + lamp.x);
+    const g = lc.createRadialGradient(lamp.x, lamp.y + 460, 10, lamp.x, lamp.y + 460, lamp.radius * flick);
+    g.addColorStop(0, 'rgba(0,0,0,0.98)');
+    g.addColorStop(0.6, 'rgba(0,0,0,0.7)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    lc.fillStyle = g;
+    lc.beginPath();
+    lc.arc(lamp.x, lamp.y + 460, lamp.radius * flick, 0, Math.PI * 2);
+    lc.fill();
   }
-  return best;
-}
-
-/**
- * Cast a vision cone: returns the polygon (array of {x,y}) of the visible
- * area from (ox,oy) facing `angle`, half-angle `half`, out to `range`.
- * 31 rays; each ray stops at walls / tall cover.
- */
-export function castCone(ox, oy, angle, half, range, blockers, rays = 31) {
-  const pts = [{ x: ox, y: oy }];
-  for (let i = 0; i <= rays; i++) {
-    const a = angle - half + (2 * half * i) / rays;
-    const d = rayHitDistance(ox, oy, a, range, blockers);
-    pts.push({ x: ox + Math.cos(a) * d, y: oy + Math.sin(a) * d });
+  // Moon shafts.
+  for (const shaft of MOON_SHAFTS) {
+    const grad = lc.createLinearGradient(shaft.x, 0, shaft.x + 400 * shaft.angle, h);
+    grad.addColorStop(0, 'rgba(0,0,0,0.55)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.08)');
+    lc.fillStyle = grad;
+    lc.beginPath();
+    lc.moveTo(shaft.x - shaft.width / 2, 0);
+    lc.lineTo(shaft.x + shaft.width / 2, 0);
+    lc.lineTo(shaft.x + shaft.width / 2 + h * shaft.angle, h);
+    lc.lineTo(shaft.x - shaft.width / 2 + h * shaft.angle, h);
+    lc.closePath();
+    lc.fill();
   }
-  return pts;
-}
-
-/** True when the segment (x1,y1)-(x2,y2) touches no sight blocker. */
-export function lineOfSightClear(x1, y1, x2, y2, blockers) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const dist = Math.hypot(dx, dy);
-  if (dist < 1e-6) return true;
-  const ux = dx / dist;
-  const uy = dy / dist;
-  for (const r of blockers) {
-    const t = rayRect(x1, y1, ux, uy, r);
-    if (t !== null && t > 0.5 && t < dist - 0.5) return false;
+  // Flashlight cones — the brightest holes in the dark.
+  for (const cone of cones) {
+    const tipX = cone.x + Math.cos(cone.angle) * cone.range;
+    const tipY = cone.y + Math.sin(cone.angle) * cone.range;
+    const spread = Math.tan(cone.half) * cone.range;
+    const px = -Math.sin(cone.angle) * spread, py = Math.cos(cone.angle) * spread;
+    const g = lc.createRadialGradient(cone.x, cone.y, 8, cone.x, cone.y, cone.range);
+    g.addColorStop(0, 'rgba(0,0,0,0.98)');
+    g.addColorStop(0.7, 'rgba(0,0,0,0.6)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    lc.fillStyle = g;
+    lc.beginPath();
+    lc.moveTo(cone.x, cone.y);
+    lc.lineTo(tipX + px, tipY + py);
+    lc.lineTo(tipX - px, tipY - py);
+    lc.closePath();
+    lc.fill();
   }
-  return true;
-}
-
-/** True when a point sits inside a shadow patch (detection is slower there). */
-export function inShadow(x, y, shadows) {
-  for (const s of shadows) {
-    if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return true;
-  }
-  return false;
-}
-
-/** True when a point sits inside a lamp pool (detection is faster there). */
-export function inLampLight(x, y, lamps) {
-  for (const l of lamps) {
-    if (Math.hypot(x - l.x, y - l.y) < l.r) return true;
-  }
-  return false;
-}
-
-/**
- * Detection multiplier at a point: shadow 0.45x, lamp light 1.6x, else 1x.
- * Shadow wins over lamp light when they overlap.
- */
-export function lightFactor(x, y, level) {
-  if (inShadow(x, y, level.shadows)) return 0.45;
-  if (inLampLight(x, y, level.lamps)) return 1.6;
-  return 1;
-}
-
-/** Circle (cx,cy,r) vs rect overlap test, for movement collision. */
-export function circleHitsRect(cx, cy, r, rect) {
-  const nx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
-  const ny = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
-  const dx = cx - nx;
-  const dy = cy - ny;
-  return dx * dx + dy * dy < r * r;
-}
-
-/**
- * Push a circle out of every solid rect it overlaps. Returns true if any push
- * happened. Called after moving, so entities slide along walls.
- */
-export function resolveCircle(cx, cy, r, rects) {
-  let pushed = false;
-  for (const rect of rects) {
-    const nx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
-    const ny = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
-    let dx = cx - nx;
-    let dy = cy - ny;
-    let d2 = dx * dx + dy * dy;
-    if (d2 >= r * r) continue;
-    pushed = true;
-    if (d2 < 1e-6) {
-      // Centre inside the rect: push out along the smallest penetration axis.
-      const left = cx - rect.x;
-      const right = rect.x + rect.w - cx;
-      const top = cy - rect.y;
-      const bottom = rect.y + rect.h - cy;
-      const m = Math.min(left, right, top, bottom);
-      if (m === left) cx = rect.x - r;
-      else if (m === right) cx = rect.x + rect.w + r;
-      else if (m === top) cy = rect.y - r;
-      else cy = rect.y + rect.h + r;
-    } else {
-      const d = Math.sqrt(d2);
-      dx /= d; dy /= d;
-      cx = nx + dx * r;
-      cy = ny + dy * r;
-    }
-  }
-  return { x: cx, y: cy, pushed };
+  ctx.drawImage(lightCanvas, 0, 0);
 }

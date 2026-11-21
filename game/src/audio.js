@@ -1,110 +1,87 @@
-// audio.js — every sound is synthesized with WebAudio: no audio files.
-// Footsteps tick softly and get louder as the nearest guard closes in,
-// cameras beep while they lock on, and pickups, alarms and wins get jingles.
+// audio.js — all sound synthesized with WebAudio: soft footstep ticks panned
+// by guard distance, a low alarm sting, relic chimes, win and lose motifs.
+// No audio files, no network.
 
-export class SoundEngine {
-  constructor() {
-    this.ctx = null;
-    this.muted = false;
-    this.hum = null;
-    this.humGain = null;
-  }
+let ctx = null;
+let master = null;
+let muted = false;
 
-  /** Create the audio context on the first user gesture (browsers require it). */
-  ensure() {
-    if (this.ctx) {
-      if (this.ctx.state === 'suspended') this.ctx.resume();
-      return;
-    }
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AC();
-      // Quiet room-tone hum under everything.
-      const osc = this.ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = 52;
-      const g = this.ctx.createGain();
-      g.gain.value = 0.018;
-      osc.connect(g).connect(this.ctx.destination);
-      osc.start();
-      this.hum = osc;
-      this.humGain = g;
-    } catch (e) {
-      this.ctx = null;
-    }
-  }
+export function ensureAudio() {
+  if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain();
+    master.gain.value = 0.5;
+    master.connect(ctx.destination);
+  } catch (e) { ctx = null; }
+}
 
-  toggleMute() {
-    this.muted = !this.muted;
-    if (this.humGain) this.humGain.gain.value = this.muted ? 0 : 0.018;
-    return this.muted;
-  }
+export function toggleMute() {
+  muted = !muted;
+  if (master) master.gain.value = muted ? 0 : 0.5;
+  return muted;
+}
+export function isMuted() { return muted; }
 
-  /** Short tone: freq in Hz, dur in seconds, type, volume 0..1. */
-  tone(freq, dur, type = 'sine', vol = 0.08, when = 0, slideTo = null) {
-    if (!this.ctx || this.muted) return;
-    const t0 = this.ctx.currentTime + when;
-    const o = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t0);
-    if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
-    g.gain.setValueAtTime(vol, t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g).connect(this.ctx.destination);
-    o.start(t0);
-    o.stop(t0 + dur + 0.02);
-  }
+// A short filtered tick: a footstep on stone. pan -1..1 by guard distance.
+export function footstep(pan, loud) {
+  if (!ctx || muted) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(180 + Math.random() * 60, t);
+  osc.frequency.exponentialRampToValueAtTime(70, t + 0.07);
+  filter.type = 'lowpass';
+  filter.frequency.value = 500;
+  gain.gain.setValueAtTime(0.12 * loud, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  osc.connect(filter); filter.connect(gain);
+  if (panner) { panner.pan.value = Math.max(-1, Math.min(1, pan)); gain.connect(panner); panner.connect(master); }
+  else gain.connect(master);
+  osc.start(t); osc.stop(t + 0.1);
+}
 
-  /** Soft footstep tick. `near` 0..1 is how close the nearest guard is. */
-  footstep(sneaking, near) {
-    if (!this.ctx || this.muted) return;
-    const vol = sneaking ? 0.015 : 0.03 + near * 0.05;
-    this.tone(sneaking ? 300 : 170, 0.06, 'triangle', vol, 0, 90);
-  }
+function tone(freq, dur, type, vol, when = 0, slideTo = null) {
+  if (!ctx || muted) return;
+  const t = ctx.currentTime + when;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(gain); gain.connect(master);
+  osc.start(t); osc.stop(t + dur + 0.02);
+}
 
-  /** Camera lock beep; pitch climbs as the lock fills. */
-  cameraBeep(lock) {
-    this.tone(700 + lock * 500, 0.07, 'square', 0.035);
-  }
+// Rising two-note alarm sting when a guard goes "!" and chases.
+export function alarmSting() {
+  tone(220, 0.25, 'sawtooth', 0.10);
+  tone(311, 0.35, 'sawtooth', 0.10, 0.18);
+  tone(440, 0.5, 'sawtooth', 0.08, 0.36, 660);
+}
 
-  /** Guard gets suspicious — a short questioning blip. */
-  suspicious() {
-    this.tone(520, 0.12, 'sine', 0.07, 0, 780);
-  }
+// Soft "?" tick when a guard grows suspicious.
+export function suspiciousTick() {
+  tone(520, 0.12, 'sine', 0.08);
+  tone(660, 0.14, 'sine', 0.07, 0.1);
+}
 
-  /** Alarm sting: two harsh descending tones. */
-  alarm() {
-    this.tone(880, 0.22, 'sawtooth', 0.09, 0, 440);
-    this.tone(880, 0.22, 'sawtooth', 0.09, 0.24, 440);
-  }
+// Bright chime when a relic is stolen.
+export function relicChime() {
+  tone(880, 0.3, 'sine', 0.12);
+  tone(1318, 0.45, 'sine', 0.10, 0.09);
+}
 
-  /** Relic pickup: a bright little arpeggio. */
-  pickup() {
-    this.tone(660, 0.1, 'sine', 0.09);
-    this.tone(880, 0.1, 'sine', 0.09, 0.09);
-    this.tone(1320, 0.16, 'sine', 0.09, 0.18);
-  }
-
-  /** Fuse cut: a spark and a dying hum. */
-  fuseCut() {
-    this.tone(1200, 0.08, 'square', 0.06, 0, 300);
-    this.tone(300, 0.3, 'sawtooth', 0.05, 0.08, 60);
-  }
-
-  /** Level clear: a rising fanfare. */
-  levelClear() {
-    [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.16, 'triangle', 0.09, i * 0.11));
-  }
-
-  /** Run won: a longer fanfare. */
-  win() {
-    [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.18, 'triangle', 0.09, i * 0.12));
-  }
-
-  /** Caught: a low falling sting. */
-  lose() {
-    this.tone(220, 0.5, 'sawtooth', 0.1, 0, 55);
-    this.tone(110, 0.7, 'sawtooth', 0.08, 0.15, 40);
-  }
+// Win motif: a small rising arpeggio. Lose motif: a low falling drone.
+export function winMotif() {
+  [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.4, 'triangle', 0.12, i * 0.13));
+}
+export function loseMotif() {
+  tone(196, 0.8, 'sawtooth', 0.10, 0, 98);
+  tone(147, 1.0, 'sawtooth', 0.08, 0.3, 73);
 }
