@@ -1,19 +1,123 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>NIGHT SHIFT: THE ARCHIVE — a stealth game</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #07080d; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: #e8e4d8; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #stage { position: relative; width: 1280px; height: 720px; max-width: 100vw; max-height: 100vh; }
+  #game { display: block; width: 100%; height: 100%; background: #0b0d16; border-radius: 6px; }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; pointer-events: none; }
+  .overlay.hidden { display: none; }
+  .panel {
+    pointer-events: auto; background: rgba(8, 10, 18, 0.88);
+    border: 1px solid #3a3f55; border-radius: 12px; padding: 28px 40px;
+    max-width: 640px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
+  }
+  h1 { font-size: 40px; letter-spacing: 4px; color: #ffd97a; text-shadow: 0 0 24px rgba(255, 190, 60, 0.35); }
+  h1 small { display: block; font-size: 15px; letter-spacing: 8px; color: #8fa3c8; margin-top: 6px; }
+  h2 { font-size: 34px; letter-spacing: 3px; }
+  .win h2 { color: #7dff9e; } .lose h2 { color: #ff6b6b; }
+  .panel p { margin: 12px 0; line-height: 1.55; font-size: 15px; color: #c9cddb; }
+  .panel .keys { color: #ffd97a; }
+  .controls { font-size: 13px; color: #9aa3b8; line-height: 1.9; margin-top: 10px; }
+  .controls b { color: #e8e4d8; background: #1c2133; border: 1px solid #3a3f55; border-radius: 4px; padding: 1px 7px; font-weight: 600; }
+  button {
+    pointer-events: auto; margin-top: 16px; cursor: pointer;
+    font: 600 16px/1 "Segoe UI", system-ui, sans-serif; letter-spacing: 2px;
+    color: #0b0d16; background: #ffd97a; border: 0; border-radius: 8px; padding: 13px 30px;
+  }
+  button:hover { background: #ffe1a0; }
+  button.ghost { background: transparent; color: #c9cddb; border: 1px solid #3a3f55; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0; height: 46px;
+    display: flex; align-items: center; gap: 18px; padding: 0 16px;
+    background: linear-gradient(rgba(5, 6, 10, 0.85), rgba(5, 6, 10, 0.35) 80%, transparent);
+    font-size: 14px; pointer-events: none; user-select: none;
+  }
+  #hud.hidden { display: none; }
+  #hud .chip { background: rgba(10, 12, 20, 0.72); border: 1px solid #2c3247; border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
+  #hud .chip b { color: #ffd97a; }
+  #alarmWrap { flex: 1; display: flex; align-items: center; gap: 8px; max-width: 340px; margin-left: auto; }
+  #alarmWrap span { font-size: 12px; letter-spacing: 2px; color: #c9cddb; }
+  #alarmBar { flex: 1; height: 10px; background: #1a1e2e; border: 1px solid #2c3247; border-radius: 999px; overflow: hidden; }
+  #alarmFill { height: 100%; width: 0%; background: #ffd97a; transition: width 0.15s linear, background 0.2s; }
+  #toast {
+    position: absolute; top: 58px; left: 50%; transform: translateX(-50%);
+    background: rgba(10, 12, 20, 0.85); border: 1px solid #3a3f55; border-radius: 999px;
+    padding: 6px 16px; font-size: 14px; color: #ffd97a; opacity: 0; transition: opacity 0.3s;
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+  #hint { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 12px; color: rgba(200, 205, 220, 0.55); pointer-events: none; }
+  #hint.hidden { display: none; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
-<p id="status" role="status" aria-live="polite"></p>
-<script type="module" src="./src/main.js"></script>
+  <div id="stage">
+    <canvas id="game" width="1280" height="720"></canvas>
+
+    <div id="hud" class="hidden">
+      <span class="chip">📜 Keys <b id="hudKeys">0 / 3</b></span>
+      <span class="chip">⏱ <b id="hudTime">0:00</b></span>
+      <span class="chip" id="hudSneak">🚶 Walking</span>
+      <div id="alarmWrap"><span>ALARM</span><div id="alarmBar"><div id="alarmFill"></div></div></div>
+    </div>
+    <div id="toast"></div>
+
+    <div id="screen-title" class="overlay">
+      <div class="panel">
+        <h1>NIGHT SHIFT<small>THE ARCHIVE</small></h1>
+        <p>The museum is closed. Three archive documents are locked inside, and the night
+           guards are walking their rounds. Slip past their vision cones, stay in the dark,
+           grab all three documents — then reach the glowing green exit unseen.</p>
+        <p class="keys">📜 Collect 3 documents &nbsp;·&nbsp; 🚪 Reach the EXIT &nbsp;·&nbsp; 👁 Don't get seen</p>
+        <div class="controls">
+          <b>W A S D</b> / <b>← ↑ ↓ →</b> move &nbsp;·&nbsp; <b>Shift</b> sneak (slow, quiet, hard to spot)<br>
+          <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>M</b> mute
+        </div>
+        <button id="btnStart">BEGIN THE HEIST</button>
+      </div>
+    </div>
+
+    <div id="screen-win" class="overlay win hidden">
+      <div class="panel">
+        <h2>🎉 CLEAN GETAWAY!</h2>
+        <p id="winStats"></p>
+        <p>You slipped out of the archive with every document — and no guard ever knew you were there.</p>
+        <button id="btnAgainWin">PLAY AGAIN</button>
+        <button id="btnAgainWin2" class="ghost">BACK TO TITLE</button>
+      </div>
+    </div>
+
+    <div id="screen-lose" class="overlay lose hidden">
+      <div class="panel">
+        <h2>🚨 CAUGHT!</h2>
+        <p id="loseStats"></p>
+        <p id="loseReason"></p>
+        <button id="btnAgainLose">TRY AGAIN</button>
+        <button id="btnAgainLose2" class="ghost">BACK TO TITLE</button>
+      </div>
+    </div>
+
+    <div id="screen-pause" class="overlay hidden">
+      <div class="panel">
+        <h2>⏸ PAUSED</h2>
+        <p>Take a breath. The guards keep their rounds when you return.</p>
+        <button id="btnResume">RESUME</button>
+      </div>
+    </div>
+
+    <div id="hint">WASD move · Shift sneak · P pause · R restart</div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>

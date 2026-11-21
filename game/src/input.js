@@ -1,53 +1,67 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// input.js — keyboard state: WASD + arrows to move, Shift to sneak.
+// Edge-triggered keys (pause, restart, mute) are consumed once per press.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+const MOVE_KEYS = {
+  KeyW: [0, -1],
+  ArrowUp: [0, -1],
+  KeyS: [0, 1],
+  ArrowDown: [0, 1],
+  KeyA: [-1, 0],
+  ArrowLeft: [-1, 0],
+  KeyD: [1, 0],
+  ArrowRight: [1, 0],
+};
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+export class Input {
+  constructor() {
+    this.down = new Set();
+    this.pressed = new Set(); // edge-triggered, cleared each frame by main.js
+    this.onKeyDown = this.onKeyDown.bind(this);
+    this.onKeyUp = this.onKeyUp.bind(this);
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+  }
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  onKeyDown(e) {
+    if (MOVE_KEYS[e.code] || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      e.preventDefault();
+    }
+    if (!e.repeat) this.pressed.add(e.code);
+    this.down.add(e.code);
+  }
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  onKeyUp(e) {
+    this.down.delete(e.code);
+  }
 
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-  };
+  axisX() {
+    let x = 0;
+    for (const code of this.down) {
+      const v = MOVE_KEYS[code];
+      if (v) x += v[0];
+    }
+    return x;
+  }
+
+  axisY() {
+    let y = 0;
+    for (const code of this.down) {
+      const v = MOVE_KEYS[code];
+      if (v) y += v[1];
+    }
+    return y;
+  }
+
+  sneak() {
+    return this.down.has('ShiftLeft') || this.down.has('ShiftRight');
+  }
+
+  // True once per physical press; main.js clears the set after each frame.
+  wasPressed(code) {
+    return this.pressed.has(code);
+  }
+
+  endFrame() {
+    this.pressed.clear();
+  }
 }
