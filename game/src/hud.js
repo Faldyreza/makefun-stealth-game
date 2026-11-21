@@ -1,161 +1,143 @@
-// hud.js — the on-screen readouts, drawn on the same canvas as the game:
-// relics and timer top-left, the alarm bar top-centre, a live minimap
-// top-right, a fading controls hint at the start, and the small win /
-// lose banners (kept at the top so they never cover the level centre).
+// hud.js — the heads-up display and the title / pause / end screens.
+// The HUD lives in the top bar; the minimap owns the bottom-left corner, so
+// nothing else is drawn down there. End screens are translucent on purpose:
+// the level stays visible behind the banner.
 
-import { WORLD_W, WORLD_H } from './level.js';
+export function drawTopBar(ctx, state) {
+  const level = state.level;
+  const taken = level.relics.filter((r) => r.taken).length;
+  const total = level.relics.length;
+  const runTaken = state.runRelicsTaken;
+  const runTotal = state.runRelicsTotal;
 
-const MAP_W = 208;
-const MAP_H = 117;
-const MAP_X = WORLD_W - MAP_W - 14;
-const MAP_Y = 14;
+  ctx.save();
+  // Bar background.
+  ctx.fillStyle = 'rgba(8, 8, 14, 0.92)';
+  ctx.fillRect(0, 0, 1280, 52);
+  ctx.fillStyle = level.theme.trim;
+  ctx.fillRect(0, 52, 1280, 2);
 
-function fmtTime(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  // Level name + objective (left).
+  ctx.fillStyle = '#f5ead0';
+  ctx.font = 'bold 17px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(level.name, 16, 17);
+  ctx.fillStyle = '#cbb98a';
+  ctx.font = '13px Georgia, serif';
+  ctx.fillText(level.objective, 16, 38);
+
+  // Relics (centre-left): this level and the whole run.
+  ctx.fillStyle = '#ffd24d';
+  ctx.font = 'bold 15px Georgia, serif';
+  ctx.fillText(`◆ RELICS ${taken}/${total}   ·   RUN ${runTaken}/${runTotal}`, 560, 26);
+
+  // Timer (centre-right).
+  const t = Math.floor(state.time);
+  const mm = String(Math.floor(t / 60)).padStart(2, '0');
+  const ss = String(t % 60).padStart(2, '0');
+  ctx.fillStyle = '#f5ead0';
+  ctx.font = 'bold 16px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`TIME ${mm}:${ss}`, 905, 26);
+
+  // Alarm bar (right).
+  const ax = 1010;
+  const ay = 14;
+  const aw = 200;
+  const ah = 16;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#f5ead0';
+  ctx.font = 'bold 13px Georgia, serif';
+  ctx.fillText('ALARM', ax, ay - 1);
+  ctx.fillStyle = '#2a2a33';
+  ctx.fillRect(ax + 58, ay, aw - 58, ah);
+  const frac = state.alarm / 100;
+  ctx.fillStyle = frac < 0.5 ? '#e8a33d' : frac < 0.8 ? '#e86a2d' : '#e02b2b';
+  ctx.fillRect(ax + 58, ay, (aw - 58) * frac, ah);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.strokeRect(ax + 58, ay, aw - 58, ah);
+  if (state.alarm >= 80) {
+    ctx.fillStyle = '#ff5b5b';
+    ctx.font = 'bold 12px Georgia, serif';
+    ctx.fillText('LOCKDOWN IMMINENT', ax + 58, ay + 28);
+  }
+  ctx.restore();
 }
 
-function drawPanel(ctx, x, y, w, h) {
-  ctx.fillStyle = 'rgba(8, 10, 18, 0.72)';
+/** Small controls hint, bottom-right — far from the minimap. */
+export function drawControlsHint(ctx) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(245, 234, 208, 0.55)';
+  ctx.font = '12px Georgia, serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('WASD / arrows move · click floor to walk · Shift sneak · P pause · R restart · M mute', 1264, 708);
+  ctx.restore();
+}
+
+function panel(ctx, title, lines, accent) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(5, 5, 10, 0.72)';
+  ctx.fillRect(0, 0, 1280, 720);
+  const w = 640;
+  const h = 150 + lines.length * 30;
+  const x = (1280 - w) / 2;
+  const y = (720 - h) / 2;
+  ctx.fillStyle = 'rgba(16, 14, 24, 0.96)';
   ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(160, 175, 220, 0.35)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-}
-
-function drawStatusPanel(ctx, relicsGot, elapsed, alarm, sneaking, inShadow) {
-  drawPanel(ctx, 14, 14, 252, 66);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#ffd65a';
-  ctx.font = 'bold 17px sans-serif';
-  ctx.fillText('RELICS  ' + relicsGot + ' / 5', 26, 38);
-  ctx.fillStyle = '#dfe6ff';
-  ctx.font = '15px sans-serif';
-  ctx.fillText('TIME  ' + fmtTime(elapsed), 26, 60);
-  ctx.fillStyle = sneaking ? '#b9a5ff' : '#9fb2d8';
-  ctx.font = '12px sans-serif';
-  const state = inShadow ? 'IN SHADOW' : sneaking ? 'SNEAKING' : 'EXPOSED';
-  ctx.fillText(state, 148, 60);
-
-  // Alarm bar, top-centre.
-  const barW = 320;
-  const barX = (WORLD_W - barW) / 2;
-  drawPanel(ctx, barX - 10, 14, barW + 20, 40);
-  ctx.fillStyle = '#dfe6ff';
-  ctx.font = 'bold 13px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('ALARM', barX, 30);
-  ctx.fillStyle = '#222838';
-  ctx.fillRect(barX + 62, 20, barW - 62, 12);
-  const alarmColor = alarm > 0.66 ? '#ff4d4d' : alarm > 0.33 ? '#ff9a3d' : '#ffd23e';
-  ctx.fillStyle = alarmColor;
-  ctx.fillRect(barX + 62, 20, (barW - 62) * Math.min(1, alarm), 12);
-  ctx.strokeStyle = 'rgba(160, 175, 220, 0.4)';
-  ctx.strokeRect(barX + 62.5, 20.5, barW - 62, 12);
-}
-
-function drawMinimap(ctx, level, player, guards) {
-  drawPanel(ctx, MAP_X - 6, MAP_Y - 6, MAP_W + 12, MAP_H + 26);
-  ctx.fillStyle = '#dfe6ff';
-  ctx.font = 'bold 12px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('MAP', MAP_X, MAP_Y + MAP_H + 12);
-  const sx = MAP_W / WORLD_W;
-  const sy = MAP_H / WORLD_H;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(MAP_X, MAP_Y, MAP_W, MAP_H);
-  ctx.clip();
-  ctx.fillStyle = '#141824';
-  ctx.fillRect(MAP_X, MAP_Y, MAP_W, MAP_H);
-  ctx.fillStyle = 'rgba(64, 110, 180, 0.25)';
-  ctx.fillRect(MAP_X, MAP_Y, MAP_W * 0.34, MAP_H);
-  ctx.fillStyle = 'rgba(180, 150, 60, 0.25)';
-  ctx.fillRect(MAP_X + MAP_W * 0.34, MAP_Y, MAP_W * 0.29, MAP_H);
-  ctx.fillStyle = 'rgba(120, 70, 170, 0.25)';
-  ctx.fillRect(MAP_X + MAP_W * 0.63, MAP_Y, MAP_W * 0.37, MAP_H);
-  // Walls and tall cover.
-  ctx.fillStyle = '#5a6480';
-  for (const r of [...level.walls, ...level.shelves, ...level.pillars]) {
-    ctx.fillRect(MAP_X + r.x * sx, MAP_Y + r.y * sy, Math.max(1, r.w * sx), Math.max(1, r.h * sy));
-  }
-  // Relics left to grab.
-  for (const r of level.relics) {
-    if (r.taken) continue;
-    ctx.fillStyle = '#ffd65a';
-    ctx.beginPath();
-    ctx.arc(MAP_X + r.x * sx, MAP_Y + r.y * sy, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Exit.
-  ctx.fillStyle = level.exit.locked ? '#c05a5a' : '#4dff88';
-  ctx.fillRect(MAP_X + level.exit.x * sx - 3, MAP_Y + level.exit.y * sy - 2, 7, 5);
-  // Guards: red when alert, amber when suspicious, pale blue otherwise.
-  for (const g of guards) {
-    ctx.fillStyle = g.mode === 'chase' ? '#ff4d4d' : g.mode === 'investigate' ? '#ffd23e' : '#9fc0ff';
-    ctx.beginPath();
-    ctx.arc(MAP_X + g.x * sx, MAP_Y + g.y * sy, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Player: white, with a ring.
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(MAP_X + player.x * sx, MAP_Y + player.y * sy, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#8fa3d9';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(MAP_X + player.x * sx, MAP_Y + player.y * sy, 6, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawHint(ctx, elapsed) {
-  if (elapsed > 7) return;
-  const alpha = elapsed > 5.5 ? (7 - elapsed) / 1.5 : 1;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = 'rgba(8, 10, 18, 0.72)';
-  const text = 'WASD / arrows move  ·  SHIFT sneak  ·  click to walk  ·  P pause  ·  R restart  ·  M mute';
-  ctx.font = '14px sans-serif';
-  const w = ctx.measureText(text).width + 28;
-  ctx.fillRect((WORLD_W - w) / 2, WORLD_H - 40, w, 26);
-  ctx.fillStyle = '#dfe6ff';
-  ctx.textAlign = 'center';
-  ctx.fillText(text, WORLD_W / 2, WORLD_H - 22);
-  ctx.restore();
-}
-
-function drawBanner(ctx, title, sub, color) {
-  ctx.save();
-  const w = 560;
-  const x = (WORLD_W - w) / 2;
-  const y = 96;
-  ctx.fillStyle = 'rgba(8, 10, 18, 0.88)';
-  ctx.fillRect(x, y, w, 86);
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = accent;
   ctx.lineWidth = 2;
-  ctx.strokeRect(x + 1, y + 1, w - 2, 84);
-  ctx.fillStyle = color;
-  ctx.font = 'bold 26px sans-serif';
+  ctx.strokeRect(x, y, w, h);
   ctx.textAlign = 'center';
-  ctx.fillText(title, WORLD_W / 2, y + 38);
-  ctx.fillStyle = '#dfe6ff';
-  ctx.font = '15px sans-serif';
-  ctx.fillText(sub, WORLD_W / 2, y + 64);
+  ctx.fillStyle = accent;
+  ctx.font = 'bold 34px Georgia, serif';
+  ctx.fillText(title, 640, y + 58);
+  ctx.fillStyle = '#f5ead0';
+  ctx.font = '16px Georgia, serif';
+  lines.forEach((line, i) => ctx.fillText(line, 640, y + 104 + i * 30));
   ctx.restore();
 }
 
-export function drawHud(ctx, level, player, guards, state) {
-  drawStatusPanel(ctx, state.relicsGot, state.elapsed, state.alarm, player.sneaking, level.inShadow(player.x, player.y));
-  drawMinimap(ctx, level, player, guards);
-  drawHint(ctx, state.elapsed);
-  if (state.phase === 'won') {
-    drawBanner(ctx, 'CLEAN GETAWAY!', 'All 5 relics pocketed in ' + fmtTime(state.elapsed) + '  —  press R to play again', '#4dff88');
-  } else if (state.phase === 'lost') {
-    drawBanner(ctx, 'CAUGHT!', state.loseReason + '  —  press R to try again', '#ff4d4d');
-  } else if (state.phase === 'paused') {
-    drawBanner(ctx, 'PAUSED', 'Press P to keep sneaking  ·  R to restart', '#9fb2d8');
-  }
+export function drawTitle(ctx) {
+  panel(ctx, 'NIGHT SHIFT', [
+    'THE GRAND HEIST',
+    'Three floors. Five relics. One night.',
+    'Slip past the guards — stay out of their cones, hide in the dark,',
+    'cut the camera fuse boxes, and reach the glowing exit unseen.',
+    'WASD / arrows or click to move · Shift to sneak · P pause · R restart · M mute',
+    'Press ENTER or click to begin the heist',
+  ], '#e8b64c');
+}
+
+export function drawPaused(ctx) {
+  panel(ctx, 'PAUSED', [
+    'The guards wait. The night does not.',
+    'Press P to keep sneaking · R to restart the floor',
+  ], '#cbb98a');
+}
+
+export function drawLevelClear(ctx, state) {
+  const next = state.levelIndex + 1;
+  panel(ctx, 'FLOOR CLEARED', [
+    `${state.level.name} — all relics secured.`,
+    next < 3 ? `The stairs down to floor ${next + 1} are open.` : '',
+    'Press ENTER to keep going',
+  ], '#7ddc7d');
+}
+
+export function drawWin(ctx, state) {
+  panel(ctx, 'THE GRAND HEIST — COMPLETE', [
+    'All five relics. All three floors. Not a single alarm that mattered.',
+    `Finished in ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, '0')} — the museum never knew you were there.`,
+    'Press R to run it again',
+  ], '#ffd24d');
+}
+
+export function drawCaught(ctx, state) {
+  panel(ctx, 'CAUGHT', [
+    state.caughtReason || 'A guard got a hand on you.',
+    'The museum locks down. The night is over — for now.',
+    'Press R to try the floor again',
+  ], '#ff5b5b');
 }
